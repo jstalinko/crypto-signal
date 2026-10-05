@@ -1,0 +1,30 @@
+{
+  "telegram": {
+    "token": "YOUR_TELEGRAM_BOT_TOKEN",
+    "chatId": "YOUR_CHAT_ID",
+    "cooldownMinutes": 30
+  },
+  "exchange": {
+    "baseUrl": "https://api.binance.com",
+    "fallbackBaseUrl": "https://data-api.binance.vision"
+  },
+  "trading": {
+    "symbols": [
+      "BTCUSDT",
+      "ETHUSDT",
+      "SOLUSDT"
+    ],
+    "timeframe": "15m",
+    "candleLimit": 250,
+    "scanIntervalSeconds": 60
+  },
+  "strategy": {
+    "emaFast": 20,
+    "emaSlow": 50,
+    "emaTrend": 200,
+    "rsiPeriod": 14,
+    "atrPeriod": 14,
+    "volumePeriod": 20,
+    "buyThreshold": 75
+  }
+}

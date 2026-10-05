@@ -1,0 +1,32 @@
+{
+  "name": "spot-signal-bot",
+  "version": "1.0.0",
+  "description": "Telegram Spot Trading Signal Bot with Node.js, TypeScript, and Telegraf",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "keywords": [
+    "telegram",
+    "trading",
+    "spot",
+    "crypto",
+    "signals",
+    "binance",
+    "telegraf",
+    "typescript"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "axios": "^1.7.9",
+    "telegraf": "^4.16.3"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.19",
+    "tsx": "^4.19.3",
+    "typescript": "^5.7.3"
+  }
+}
