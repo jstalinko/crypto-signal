@@ -649,6 +649,244 @@ async function runTests() {
   console.log('✅ Asset valuation bridges (USDT, USDC, BTC, FDUSD) verified.');
   console.log('✅ Multi-asset Binance balance display verified.\n');
 
+  // Test 14: Testing Simplified Keyboard Buttons & PnL History Generation
+  console.log('Test 14: Testing Simplified Keyboard Buttons & PnL History Generation...');
+  const replyKeyboardObj: any = dummyBotService.getMainReplyKeyboard(true);
+  const rows: string[][] = replyKeyboardObj.reply_markup.keyboard;
+  for (const row of rows) {
+    for (const btn of row) {
+      if (btn.includes('(') || btn.includes(')')) {
+        throw new Error(`Keyboard button "${btn}" should not contain parentheses!`);
+      }
+    }
+  }
+  console.log('✅ Verified all reply keyboard buttons are simplified without parentheses.');
+
+  const testPnlStorage = path.resolve(process.cwd(), 'data', 'test_pnl_watchers.json');
+  const testPnlHistory = path.resolve(process.cwd(), 'data', 'test_pnl_history.json');
+  if (fs.existsSync(testPnlStorage)) fs.unlinkSync(testPnlStorage);
+  if (fs.existsSync(testPnlHistory)) fs.unlinkSync(testPnlHistory);
+
+  const pnlWatcher = new TradeWatcherService(client, 15, testPnlStorage, testPnlHistory);
+  const testChat = '888777666';
+
+  // 1. Record WIN trade (TP2 Hit)
+  pnlWatcher.addHistoryRecord({
+    id: 'H1',
+    symbol: 'SOLUSDT',
+    chatId: testChat,
+    timeframe: '15m',
+    entryPrice: 150,
+    exitPrice: 156,
+    stopLoss: 147,
+    takeProfit1: 153,
+    takeProfit2: 156,
+    pnlPercent: 3.0,
+    result: 'WIN',
+    status: 'TP2_HIT',
+    entryTime: Date.now() - 3600000,
+    closedAt: Date.now() - 1800000,
+    durationMs: 1800000
+  });
+
+  // 2. Record WIN trade (TP1 + BEP)
+  pnlWatcher.addHistoryRecord({
+    id: 'H2',
+    symbol: 'NEARUSDT',
+    chatId: testChat,
+    timeframe: '15m',
+    entryPrice: 5.0,
+    exitPrice: 5.0,
+    stopLoss: 5.0,
+    takeProfit1: 5.2,
+    takeProfit2: 5.4,
+    pnlPercent: 2.0,
+    result: 'WIN',
+    status: 'TP1_HIT_BEP',
+    entryTime: Date.now() - 7200000,
+    closedAt: Date.now() - 3600000,
+    durationMs: 3600000
+  });
+
+  // 3. Record LOSS trade (SL Hit)
+  pnlWatcher.addHistoryRecord({
+    id: 'H3',
+    symbol: 'DOGEUSDT',
+    chatId: testChat,
+    timeframe: '15m',
+    entryPrice: 0.10,
+    exitPrice: 0.098,
+    stopLoss: 0.098,
+    takeProfit1: 0.103,
+    takeProfit2: 0.106,
+    pnlPercent: -2.0,
+    result: 'LOSS',
+    status: 'SL_HIT',
+    entryTime: Date.now() - 10800000,
+    closedAt: Date.now() - 7200000,
+    durationMs: 3600000
+  });
+
+  // Also add an active running watcher
+  pnlWatcher.addWatcher({
+    symbol: 'ETHUSDT',
+    chatId: testChat,
+    timeframe: '1h',
+    entryPrice: 2600,
+    stopLoss: 2550,
+    takeProfit1: 2650,
+    takeProfit2: 2700
+  });
+
+  const pnlSummary = pnlWatcher.generatePnlSummary(testChat);
+  console.log('Generated PnL summary:', JSON.stringify(pnlSummary, null, 2));
+
+  if (pnlSummary.totalTrades !== 3) {
+    throw new Error(`Expected 3 total trades, got ${pnlSummary.totalTrades}`);
+  }
+  if (pnlSummary.wins !== 2) {
+    throw new Error(`Expected 2 wins, got ${pnlSummary.wins}`);
+  }
+  if (pnlSummary.losses !== 1) {
+    throw new Error(`Expected 1 loss, got ${pnlSummary.losses}`);
+  }
+  if (Math.abs(pnlSummary.winRate - 66.7) > 0.1) {
+    throw new Error(`Expected ~66.7% win rate, got ${pnlSummary.winRate}`);
+  }
+  if (pnlSummary.totalRealizedPnlPercent !== 3.0) {
+    throw new Error(`Expected +3.0% net PnL, got ${pnlSummary.totalRealizedPnlPercent}`);
+  }
+  if (pnlSummary.profitFactor !== 2.5) {
+    throw new Error(`Expected profit factor 2.5, got ${pnlSummary.profitFactor}`);
+  }
+  if (pnlSummary.activePositionsCount !== 1) {
+    throw new Error(`Expected 1 active position, got ${pnlSummary.activePositionsCount}`);
+  }
+
+  // Format PnL message and validate Telegram HTML
+  const { formatPnlReportMessage } = await import('../src/telegram/formatter.js');
+  const pnlMsg = formatPnlReportMessage(pnlSummary, { isAdmin: false, isGlobal: false });
+  console.log('--- Sample PnL Report Message ---');
+  console.log(pnlMsg);
+  console.log('---------------------------------');
+  validateTelegramHtml(pnlMsg, 'PnlReportMessage');
+
+  // Verify empty PnL message formatting
+  const emptySummary = pnlWatcher.generatePnlSummary('nonexistent_user');
+  const emptyPnlMsg = formatPnlReportMessage(emptySummary);
+  validateTelegramHtml(emptyPnlMsg, 'EmptyPnlReportMessage');
+
+  // Verify disk persistence of history
+  const pnlWatcherRestored = new TradeWatcherService(client, 15, testPnlStorage, testPnlHistory);
+  const restoredSummary = pnlWatcherRestored.generatePnlSummary(testChat);
+  if (restoredSummary.totalTrades !== 3) {
+    throw new Error(`History restoration failed: expected 3 trades, got ${restoredSummary.totalTrades}`);
+  }
+
+  // Clear history test
+  pnlWatcherRestored.clearHistory(testChat);
+  if (pnlWatcherRestored.getHistory(testChat).length !== 0) {
+    throw new Error('Clear history failed');
+  }
+
+  // Clean up test files
+  if (fs.existsSync(testPnlStorage)) fs.unlinkSync(testPnlStorage);
+  if (fs.existsSync(testPnlHistory)) fs.unlinkSync(testPnlHistory);
+
+  console.log('✅ PnL summary analytics, disk persistence & HTML formatting verified.\n');
+
+  // Test 15: Spot Buy & Sell Integration, LOT_SIZE StepSize Quantization, and Formatters
+  console.log('Test 15: Testing Spot Buy & Sell Execution, LOT_SIZE Quantization & Formatters...');
+  const {
+    formatSellConfirmMessage: fmtSellConfirm,
+    formatSellSelectMenuMessage: fmtSellSelect,
+    formatPortfolioSellSelectMessage: fmtPortSellSelect
+  } = await import('../src/telegram/formatter.js');
+
+  const tradeClient = new BinanceTradingClient();
+
+  // 15.1 Verify formatQuantityToStepSize quantization
+  const testCases = [
+    { qty: 6.1762255, step: 0.01, expected: '6.17' },
+    { qty: 6.1762255, step: 0.001, expected: '6.176' },
+    { qty: 0.0054999, step: 0.0001, expected: '0.0054' },
+    { qty: 125.999, step: 1, expected: '125' },
+    { qty: 50.12345678, step: 0.00001, expected: '50.12345' },
+    { qty: 10, step: 0.1, expected: '10.0' }
+  ];
+
+  for (const tc of testCases) {
+    const formatted = tradeClient.formatQuantityToStepSize(tc.qty, tc.step);
+    if (formatted !== tc.expected) {
+      throw new Error(`Quantization failure for ${tc.qty} with step ${tc.step}: expected ${tc.expected}, got ${formatted}`);
+    }
+  }
+  console.log('✅ StepSize LOT_SIZE quantization formulas verified across all precision levels.');
+
+  // 15.2 Verify SymbolLotInfo fallback & extraction
+  const lotInfo = await tradeClient.getSymbolLotInfo('SOLUSDT');
+  if (!lotInfo.symbol || lotInfo.symbol !== 'SOLUSDT') {
+    throw new Error('SymbolLotInfo symbol extraction mismatch');
+  }
+  if (lotInfo.baseAsset !== 'SOL' || lotInfo.quoteAsset !== 'USDT') {
+    throw new Error(`SymbolLotInfo asset extraction mismatch: base=${lotInfo.baseAsset}, quote=${lotInfo.quoteAsset}`);
+  }
+  if (lotInfo.minNotional <= 0 || lotInfo.stepSize <= 0) {
+    throw new Error('SymbolLotInfo missing positive minNotional or stepSize');
+  }
+  console.log(`✅ SymbolLotInfo fetched/cached for SOLUSDT: stepSize=${lotInfo.stepSize}, minNotional=${lotInfo.minNotional}`);
+
+  // 15.3 Test formatSellSelectMenuMessage HTML validity
+  const sellMenuMsg = fmtSellSelect('SOLUSDT', 2.5, 145.2, lotInfo);
+  console.log('--- Sample Sell Select Menu Message ---');
+  console.log(sellMenuMsg);
+  console.log('---------------------------------------');
+  validateTelegramHtml(sellMenuMsg, 'SellSelectMenuMessage');
+
+  // 15.4 Test formatSellConfirmMessage HTML validity
+  const sellConfirmMsg = fmtSellConfirm('SOLUSDT', 1.25, '50%', 145.2, 2.5);
+  console.log('--- Sample Sell Confirm Message ---');
+  console.log(sellConfirmMsg);
+  console.log('-----------------------------------');
+  validateTelegramHtml(sellConfirmMsg, 'SellConfirmMessage');
+
+  // 15.5 Test formatPortfolioSellSelectMessage HTML validity
+  const samplePortfolioAssets = [
+    { asset: 'SOL', free: 2.5, estimatedUsdt: 363.0 },
+    { asset: 'BTC', free: 0.015, estimatedUsdt: 975.0 },
+    { asset: 'ETH', free: 0.25, estimatedUsdt: 650.0 }
+  ];
+  const portSellMsg = fmtPortSellSelect(samplePortfolioAssets);
+  console.log('--- Sample Portfolio Sell Select Message ---');
+  console.log(portSellMsg);
+  console.log('--------------------------------------------');
+  validateTelegramHtml(portSellMsg, 'PortfolioSellSelectMessage');
+
+  // 15.6 Test formatOrderReceiptMessage for SELL order
+  const sellReceiptMsg = formatOrderReceiptMessage({
+    orderId: 987654321,
+    symbol: 'SOLUSDT',
+    side: 'SELL',
+    type: 'MARKET',
+    status: 'FILLED',
+    executedQty: 1.25,
+    cummulativeQuoteQty: 181.5,
+    avgPrice: 145.2,
+    transactTime: Date.now()
+  });
+  console.log('--- Sample Sell Order Receipt Message ---');
+  console.log(sellReceiptMsg);
+  console.log('-----------------------------------------');
+  validateTelegramHtml(sellReceiptMsg, 'SellOrderReceiptMessage');
+  if (!sellReceiptMsg.includes('ORDER JUAL SPOT BERHASIL')) {
+    throw new Error('Sell order receipt missing expected Indonesian success title');
+  }
+  if (!sellReceiptMsg.includes('+$181.50 USDT')) {
+    throw new Error('Sell order receipt missing received USDT amount');
+  }
+
+  console.log('✅ Spot Buy & Sell Integration, LOT_SIZE StepSize Quantization & Formatters verified.\n');
+
   console.log('🎉 ALL TESTS PASSED SUCCESSFULLY!');
 }
 

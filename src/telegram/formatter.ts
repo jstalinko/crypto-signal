@@ -1,7 +1,8 @@
 import { SignalResult } from '../strategy/signal.js';
 import { formatPrice } from '../risk/riskManager.js';
 import { BotUser } from '../user/userManager.js';
-import { AccountBalanceInfo, OrderExecutionResult } from '../exchange/binanceTrade.js';
+import { AccountBalanceInfo, OrderExecutionResult, SymbolLotInfo } from '../exchange/binanceTrade.js';
+import type { WatcherHistoryRecord, WatcherPnlSummary } from '../watcher/tradeWatcher.js';
 export { formatPrice } from '../risk/riskManager.js';
 
 export interface BotStatusInfo {
@@ -413,7 +414,9 @@ export function formatWatchersListMessage(watchers: Array<{
 <i>Saat ini tidak ada posisi yang sedang dipantau.</i>
 
 💡 <b>Cara Mengaktifkan:</b>
-Ketik analisa koin apa saja (contoh: /near, /sui, /sol) atau /scalp, lalu klik tombol <b>🔔 Notice Me</b> di bawah hasil analisa!`;
+Ketik analisa koin apa saja (contoh: /near, /sui, /sol) atau /scalp, lalu klik tombol <b>🔔 Notice Me</b> di bawah hasil analisa!
+
+📈 <i>Ketik /pnl untuk melihat laporan akumulasi PnL histori trade sebelumnya.</i>`;
   }
 
   let msg = `📋 <b>DAFTAR PANTAUAN AKTIF (${watchers.length} POSISI)</b>\n\n`;
@@ -474,7 +477,111 @@ Ketik analisa koin apa saja (contoh: /near, /sui, /sol) atau /scalp, lalu klik t
     msg += `👉 Hentikan: /unwatch_${trade.symbol.toLowerCase().replace('usdt', '')}\n\n`;
   }
 
-  msg += `💡 <i>Bot terus memantau harga secara live (update tiap 15 detik) dan akan mengirim notifikasi saat target tercapai.</i>`;
+  msg += `💡 <i>Bot terus memantau harga secara live (update tiap 15 detik). Ketik /pnl untuk melihat laporan akumulasi PnL histori trade watchers.</i>`;
+  return msg.trim();
+}
+
+/**
+ * Formats PnL performance report message based on watchers history
+ */
+export function formatPnlReportMessage(
+  summary: WatcherPnlSummary,
+  options?: {
+    isGlobal?: boolean;
+    isAdmin?: boolean;
+  }
+): string {
+  const isGlobal = options?.isGlobal ?? false;
+  const scopeTitle = isGlobal ? '🌐 GLOBAL (SEMUA PENGGUNA)' : '👤 AKUN SAYA';
+
+  if (summary.totalTrades === 0 && summary.activePositionsCount === 0) {
+    return `📈 <b>LAPORAN PERFORMA &amp; REKAP PnL WATCHERS</b>\n` +
+      `<i>Lingkup: ${scopeTitle}</i>\n` +
+      `━━━━━━━━━━━━━━━━━━━━━\n\n` +
+      `<i>Belum ada histori trade watcher yang tercatat.</i>\n\n` +
+      `💡 <b>Cara Kerja &amp; Akumulasi PnL:</b>\n` +
+      `1. Analisa koin dengan <b>🔍 Screener</b>, <b>⚡ Scalp Radar</b>, atau <code>/&lt;koin&gt;</code>.\n` +
+      `2. Klik tombol <b>🔔 Notice Me</b> untuk memantau posisi live.\n` +
+      `3. Saat harga mencapai <b>TP1, TP2, atau Stop Loss</b>, bot otomatis mencatat hasil PnL secara akurat ke dalam jurnal histori ini!`;
+  }
+
+  const pnlSign = summary.totalRealizedPnlPercent >= 0 ? '+' : '';
+  const pnlEmoji = summary.totalRealizedPnlPercent > 0 ? '🟢' : summary.totalRealizedPnlPercent < 0 ? '🔴' : '⚪';
+
+  const floatingSign = summary.unrealizedFloatingPnlPercent >= 0 ? '+' : '';
+  const floatingEmoji = summary.unrealizedFloatingPnlPercent > 0 ? '🟢' : summary.unrealizedFloatingPnlPercent < 0 ? '🔴' : '⚪';
+
+  const estUsdtSign = summary.estimatedUsdtPnl >= 0 ? '+' : '';
+
+  let pfLabel = '';
+  if (summary.profitFactor >= 2.0) pfLabel = ' 🔥 <i>(Sangat Baik)</i>';
+  else if (summary.profitFactor >= 1.0) pfLabel = ' 🟢 <i>(Profitabel)</i>';
+  else if (summary.profitFactor > 0) pfLabel = ' ⚠️ <i>(Perlu Evaluasi)</i>';
+
+  let msg = `📈 <b>LAPORAN PERFORMA &amp; REKAP PnL WATCHERS</b>\n`;
+  msg += `<i>Lingkup: ${scopeTitle}</i>\n`;
+  msg += `━━━━━━━━━━━━━━━━━━━━━\n`;
+  msg += `📊 <b>STATISTIK TRADE SELESAI</b>\n`;
+  msg += `• Total Selesai: <b>${summary.totalTrades} trade</b>\n`;
+  msg += `• 🟢 Win (Profit): <b>${summary.wins}</b>\n`;
+  msg += `• 🔴 Loss (Cut Loss): <b>${summary.losses}</b>\n`;
+  msg += `• ⚪ BEP (Impas): <b>${summary.bep}</b>\n`;
+  msg += `• 🎯 <b>Win Rate:</b> <b>${summary.winRate.toFixed(1)}%</b>\n\n`;
+
+  msg += `💰 <b>AKUMULASI HASIL (PnL)</b>\n`;
+  msg += `• <b>Total Realized PnL:</b> <b>${pnlEmoji} ${pnlSign}${summary.totalRealizedPnlPercent.toFixed(2)}%</b>\n`;
+  msg += `• Rata-rata Win: <b>+${summary.averageWinPercent.toFixed(2)}%</b>\n`;
+  msg += `• Rata-rata Loss: <b>${summary.averageLossPercent.toFixed(2)}%</b>\n`;
+  msg += `• Profit Factor: <b>${summary.profitFactor.toFixed(2)}</b>${pfLabel}\n`;
+  msg += `• Estimasi PnL ($100/trade): <b>${estUsdtSign}$${summary.estimatedUsdtPnl.toFixed(2)} USDT</b>\n\n`;
+
+  if (summary.bestTrade || summary.worstTrade) {
+    msg += `🏆 <b>REKOR PERFORMA</b>\n`;
+    if (summary.bestTrade) {
+      msg += `• Trade Terbaik: <b>${formatSymbolDisplay(summary.bestTrade.symbol)}</b> (+${summary.bestTrade.pnlPercent.toFixed(2)}%)\n`;
+    }
+    if (summary.worstTrade) {
+      const worstSign = summary.worstTrade.pnlPercent >= 0 ? '+' : '';
+      msg += `• Trade Terburuk: <b>${formatSymbolDisplay(summary.worstTrade.symbol)}</b> (${worstSign}${summary.worstTrade.pnlPercent.toFixed(2)}%)\n`;
+    }
+    msg += `\n`;
+  }
+
+  if (summary.activePositionsCount > 0) {
+    msg += `⚡ <b>POSISI BERJALAN (UNREALIZED)</b>\n`;
+    msg += `• Posisi Aktif: <b>${summary.activePositionsCount} trade</b>\n`;
+    msg += `• Floating PnL: <b>${floatingEmoji} ${floatingSign}${summary.unrealizedFloatingPnlPercent.toFixed(2)}%</b>\n\n`;
+  }
+
+  if (summary.recentTrades.length > 0) {
+    msg += `📋 <b>HISTORI TRADE TERBARU (${Math.min(5, summary.recentTrades.length)})</b>\n`;
+    const recents = summary.recentTrades.slice(0, 5);
+    for (let i = 0; i < recents.length; i++) {
+      const r = recents[i];
+      const pair = formatSymbolDisplay(r.symbol);
+      const sign = r.pnlPercent >= 0 ? '+' : '';
+      const emoji = r.result === 'WIN' ? '🟢' : r.result === 'LOSS' ? '🔴' : '⚪';
+
+      let statusBadge: string = r.status;
+      if (r.status === 'TP2_HIT') statusBadge = '🎯 TP2 HIT';
+      else if (r.status === 'TP1_HIT_BEP') statusBadge = '🛡 TP1 + BEP';
+      else if (r.status === 'SL_HIT') statusBadge = '🛑 SL HIT';
+      else if (r.status === 'CLOSED_MANUAL') statusBadge = '✋ Ditutup Manual';
+
+      const dateStr = new Date(r.closedAt).toLocaleDateString('id-ID', {
+        day: '2-digit',
+        month: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+
+      msg += `${i + 1}. ${emoji} <b>${pair}</b> (<b>${sign}${r.pnlPercent.toFixed(2)}%</b>) [${statusBadge}]\n`;
+      msg += `   Entry: ${formatPrice(r.entryPrice)} ➔ Exit: ${formatPrice(r.exitPrice)} • <i>${dateStr}</i>\n`;
+    }
+    msg += `\n`;
+  }
+
+  msg += `💡 <i>Gunakan tombol di bawah untuk menyegarkan data atau melihat pantauan aktif.</i>`;
   return msg.trim();
 }
 
@@ -539,14 +646,15 @@ export function formatStartMessage(availableCoins: string[]): string {
 
 Bot analisa teknikal spot, scalping radar, rekomendasi trading harian &amp; trade watcher live otomatis dari Binance.
 
-📱 <b>Menu Navigasi Cepat (Tombol Keyboard Tersedia di Bawah):</b>
-• 🔍 <b>Screener (/find)</b> - Market Screener 30 koin aktif di Binance
-• ⚡ <b>Scalp Radar (/scalp)</b> - Radar momentum scalping cepat (15m/30m)
-• 🎯 <b>Daily Entry (/daily)</b> - Rekomendasi sinyal entry trading harian (1h)
-• 📋 <b>Watchers (/watchers)</b> - Daftar live trade yang dipantau (TP/SL)
-• 💼 <b>Akun Binance</b> - Portofolio saldo Spot &amp; 1-Click Order
-• 📊 <b>Scan Watchlist (/scan)</b> - Scan koin di watchlist konfigurasi
-• ℹ️ <b>Help &amp; Status (/help)</b> - Panduan lengkap &amp; status bot
+📱 <b>Menu Navigasi Cepat (Tombol Keyboard di Bawah):</b>
+• 🔍 <b>Screener</b> — Market Screener 30 koin aktif di Binance
+• ⚡ <b>Scalp Radar</b> — Radar momentum scalping cepat (15m/30m)
+• 🎯 <b>Daily Entry</b> — Rekomendasi sinyal entry trading harian (1h)
+• 📋 <b>Watchers</b> — Daftar live trade yang dipantau (TP/SL)
+• 💼 <b>Akun Binance</b> — Portofolio saldo Spot &amp; 1-Click Order
+• 📈 <b>Rekap PnL</b> — Laporan performa &amp; akumulasi hasil trade watcher
+• 📊 <b>Scan Watchlist</b> — Scan koin di watchlist konfigurasi
+• ℹ️ <b>Help &amp; Status</b> — Panduan lengkap &amp; status bot
 
 📌 <b>Perintah Text / Slash:</b>
 • /daily - Dapatkan rekomendasi entry trading harian
@@ -554,6 +662,9 @@ Bot analisa teknikal spot, scalping radar, rekomendasi trading harian &amp; trad
 • /scalp [15m|30m] - Radar scalping cepat
 • /binance atau /account - Menu Akun Binance, profil &amp; saldo
 • /watchers - Cek status posisi live yang sedang dipantau
+• /pnl atau /profit - Laporan performa &amp; akumulasi PnL watchers
+• /buy &lt;coin&gt; [nominal] - Beli spot koin langsung via Binance (contoh: <code>/buy SOL 25</code>)
+• /sell &lt;coin&gt; [persen|jumlah] - Jual spot koin langsung via Binance (contoh: <code>/sell SOL 50%</code>)
 • /analyze &lt;coin&gt; [tf] - Analisa koin apapun di Binance (contoh: <code>/analyze SUI</code> atau <code>/analyze SOL 1h</code>)
 • /&lt;coin&gt; - Shortcut cepat analisa koin (contoh: /btc, /eth, /sol, /near, /sui, /doge)
 • /menu - Tampilkan kembali menu tombol navigasi
@@ -562,7 +673,8 @@ Bot analisa teknikal spot, scalping radar, rekomendasi trading harian &amp; trad
 🔔 <b>Fitur Otomatis &amp; Eksekusi:</b>
 1. <b>Update Trading Harian:</b> Bot otomatis mengirim update peluang entry daily trading ke chat ini.
 2. <b>Notice Me (Live TP/SL Alert):</b> Klik tombol <b>🔔 Notice Me</b> pada setiap sinyal untuk memantau harga secara live setiap 15 detik!
-3. <b>1-Click Spot Buy:</b> Beli koin langsung dari Telegram begitu sinyal muncul hanya dengan 1 sentuhan!`;
+3. <b>Histori &amp; Rekap PnL Otomatis:</b> Bot otomatis merekap hasil win rate, profit factor, dan keuntungan trade watcher ke dalam jurnal performa.
+4. <b>1-Click Spot Buy &amp; Sell:</b> Eksekusi beli &amp; jual koin langsung dari Telegram dengan nominal cepat atau persentase saldo (25%, 50%, 75%, 100%)!`;
 }
 
 /**
@@ -577,12 +689,15 @@ Gunakan keyboard tombol di bawah layar atau perintah slash berikut:
 • /scalp [15m|30m] - Radar scalping cepat mencari momentum entry jangka pendek (15-30 menit).
 • /daily - Dapatkan rekomendasi entry trading harian dengan level Entry, TP1, TP2, dan SL terperinci.
 • /binance atau /account - Menu Akun Binance: cek portofolio live, hubungkan API Key, atau putuskan akun.
+• /buy &lt;koin&gt; [nominal] - Beli koin spot langsung via Binance (contoh: <code>/buy SOL 25</code> atau <code>/buy SOL</code>).
+• /sell &lt;koin&gt; [persentase|jumlah] - Jual koin spot langsung via Binance (contoh: <code>/sell SOL 50%</code> atau <code>/sell SOL</code>).
 • /watchers - Melihat daftar trade yang sedang dipantau live oleh bot.
+• /pnl atau /profit - Melihat rekapitulasi PnL, win rate, dan performa histori trade watcher.
 • /scan - Scan pair yang ada di daftar watchlist konfigurasi.
 • /menu - Membuka menu navigasi tombol interaktif.
 • /unwatch &lt;koin&gt; - Membatalkan pemantauan trade live.
 • /analyze &lt;koin&gt; [tf] - Analisa koin apapun di Binance Spot (contoh: <code>/analyze DOGE</code> atau <code>/analyze SUI 4h</code>).
-• /&lt;koin&gt; - Shortcut cepat: <code>/btc</code>, <code>/eth</code>, <code>/sol</code>, <code>/near</code>, <code>/sui</code>, dll.
+• /&lt;coin&gt; - Shortcut cepat: <code>/btc</code>, <code>/eth</code>, <code>/sol</code>, <code>/near</code>, <code>/sui</code>, dll.
 • /status - Status bot &amp; jadwal scanning berkala.
 
 <b>Fitur Rekomendasi Trading Harian:</b>
@@ -591,11 +706,12 @@ Bot secara otomatis menganalisa koin-koin berlikuiditas tinggi di Binance pada t
 <b>Fitur "Notice Me" (Pemantau Posisi Real-time):</b>
 Saat Anda melihat hasil rekomendasi atau analisa koin (misal: <code>/near</code>), klik tombol <b>🔔 Notice Me</b> di bawah pesan.
 Bot akan:
-1. Menjadwalkan pemantauan harga live setiap 30 detik.
+1. Menjadwalkan pemantauan harga live setiap 15-30 detik.
 2. Mengirimkan notifikasi instan saat harga menyentuh:
    • 🎯 <b>TP1 (+%):</b> Mengingatkan Anda untuk ambil 50% profit &amp; geser SL ke BEP.
    • 🚀 <b>TP2 (+%):</b> Memberi tahu target maksimal telah tercapai.
    • 🛑 <b>Stop Loss (-%):</b> Mengingatkan disiplin cut loss untuk melindungi modal.
+3. Otomatis mencatat hasil setiap trade ke dalam jurnal <b>📈 Rekap PnL (/pnl)</b>.
 
 <b>Klasifikasi Sinyal:</b>
 🟢 <b>BUY</b>: Score &gt;= 75 + Terpenuhi Konfirmasi Penuh (EMA20 &gt; EMA50 &gt; EMA200, Harga &gt; EMA20, MACD Bullish).
@@ -858,6 +974,78 @@ Tipe Order: <b>Market Order (Instant Fill)</b>
 }
 
 /**
+ * Formats 1-Click Sell Confirmation Message
+ */
+export function formatSellConfirmMessage(
+  symbol: string,
+  sellQty: number,
+  percentage: number | string,
+  currentPrice: number,
+  totalCoinHolding: number
+): string {
+  const pair = formatSymbolDisplay(symbol);
+  const coin = symbol.replace('USDT', '');
+  const estUsdt = (sellQty * currentPrice).toFixed(2);
+  const remaining = Math.max(0, totalCoinHolding - sellQty);
+  const pctDisplay = typeof percentage === 'number' ? `${percentage}%` : percentage;
+
+  return `💰 <b>KONFIRMASI PENJUALAN SPOT</b>
+
+Pair: <b>${pair}</b>
+Tipe Order: <b>Market Order (Instant Fill)</b>
+🪙 Jumlah Dijual: <b>${sellQty} ${coin}</b> (${pctDisplay})
+📈 Harga Pasar Saat Ini: <b>${formatPrice(currentPrice)}</b>
+💵 Estimasi USDT Diterima: ~<b>$${estUsdt} USDT</b>
+
+🪙 Total Saldo Aset Anda: <b>${totalCoinHolding} ${coin}</b>
+🪙 Sisa Saldo Setelah Jual: ~<b>${remaining.toFixed(6)} ${coin}</b>
+
+⚠️ <i>Order akan langsung dieksekusi di akun Binance Spot Anda dengan harga pasar terbaik saat ini.</i>`;
+}
+
+/**
+ * Formats 1-Click Sell Quantity Selection Menu
+ */
+export function formatSellSelectMenuMessage(
+  symbol: string,
+  freeBase: number,
+  currentPrice: number,
+  lotInfo: SymbolLotInfo
+): string {
+  const pair = formatSymbolDisplay(symbol);
+  const base = lotInfo.baseAsset;
+  const totalValue = freeBase * currentPrice;
+
+  return `💰 <b>PILIH JUMLAH JUAL SPOT: ${pair}</b>
+
+🪙 Saldo Tersedia: <b>${freeBase} ${base}</b>
+📈 Harga Pasar Saat Ini: <b>${formatPrice(currentPrice)}</b>
+💵 Total Nilai Saldo: ~<b>$${totalValue.toFixed(2)} USDT</b>
+📏 Min. Order Binance: <b>$${lotInfo.minNotional.toFixed(2)} USDT</b> (min. ${lotInfo.minQty} ${base})
+
+Pilih persentase saldo yang ingin dijual atau tentukan jumlah kustom:`;
+}
+
+/**
+ * Formats Portfolio Sell Selection Hub
+ */
+export function formatPortfolioSellSelectMessage(
+  assets: Array<{ asset: string; free: number; estimatedUsdt: number }>
+): string {
+  let msg = `💰 <b>PILIH ASET SPOT UNTUK DIJUAL</b>\n\n`;
+  msg += `Berikut adalah aset koin di akun Binance Anda yang memenuhi batas minimum order Binance (≥ $5.00 USDT):\n\n`;
+
+  for (let i = 0; i < assets.length; i++) {
+    const a = assets[i];
+    const freeStr = a.free >= 1 ? a.free.toFixed(4) : a.free.toFixed(6);
+    msg += `<b>${i + 1}. ${a.asset}:</b> <code>${freeStr}</code> (~<b>$${a.estimatedUsdt.toFixed(2)} USDT</b>)\n`;
+  }
+
+  msg += `\nSilakan klik salah satu koin di bawah untuk memilih jumlah yang ingin Anda jual:`;
+  return msg.trim();
+}
+
+/**
  * Formats order execution receipt
  */
 export function formatOrderReceiptMessage(result: OrderExecutionResult): string {
@@ -866,6 +1054,22 @@ export function formatOrderReceiptMessage(result: OrderExecutionResult): string 
   const d = new Date(result.transactTime || Date.now());
   const pad = (n: number) => n.toString().padStart(2, '0');
   const timeStr = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())} WIB`;
+
+  if (result.side === 'SELL') {
+    return `🎉 <b>ORDER JUAL SPOT BERHASIL!</b> 💰
+
+Pair: <b>${pair}</b>
+Status: <b>${result.status} (FILLED)</b>
+🆔 Order ID: <code>#${result.orderId}</code>
+
+🪙 Koin Terjual: <b>${result.executedQty} ${coin}</b>
+💵 USDT Diterima: <b>+$${result.cummulativeQuoteQty.toFixed(2)} USDT</b>
+📈 Rata-rata Harga Fill: <b>${formatPrice(result.avgPrice)}</b>
+
+⏱ <i>Waktu Eksekusi: ${timeStr}</i>
+
+✅ <i>Hasil penjualan telah masuk ke saldo USDT Spot Wallet Anda.</i>`;
+  }
 
   return `🎉 <b>ORDER BELI SPOT BERHASIL!</b> 🚀
 
@@ -892,7 +1096,7 @@ export function formatBinanceAccountNotLoggedInMessage(): string {
 
 Hubungkan akun Binance Anda untuk mengaktifkan:
 • 💰 <b>Cek Portofolio &amp; Saldo Spot</b> real-time di Telegram
-• 🛒 <b>1-Click Spot Buy</b> langsung dari sinyal rekomendasi bot
+• 🛒 <b>1-Click Spot Buy &amp; Sell</b> langsung dari sinyal rekomendasi bot
 • 🔔 <b>Notice Me &amp; Trade Watcher</b> pantau target TP/SL otomatis
 
 🔒 <b>Keamanan &amp; Privasi Terjamin:</b>
@@ -916,7 +1120,7 @@ export function formatBinanceAccountLoggedInMessage(
 
   let msg = `💼 <b>PROFIL &amp; PORTOFOLIO AKUN BINANCE</b>\n\n`;
 
-  const tradeStatus = info.canTrade ? '🟢 Spot Trading Aktif (Bisa Cek Saldo &amp; 1-Click Buy)' : '🟡 Read-Only (Hanya Cek Saldo)';
+  const tradeStatus = info.canTrade ? '🟢 Spot Trading Aktif (Beli &amp; Jual Spot 1-Click)' : '🟡 Read-Only (Hanya Cek Saldo)';
   msg += `👤 <b>Status Akun:</b> 🟢 <b>TERHUBUNG (Aktif)</b>\n`;
   msg += `🔑 <b>API Key:</b> <code>${escapeHtml(maskedApiKey)}</code>\n`;
   msg += `⚡ <b>Mode Akses:</b> <b>${tradeStatus}</b>\n\n`;
@@ -955,7 +1159,7 @@ Ikuti 5 langkah mudah berikut:
 4. Lakukan verifikasi keamanan (2FA / Authenticator / Email).
 5. Pada bagian <b>API Restrictions</b>:
    ✅ Centang <b>Enable Reading</b> (untuk melihat portofolio saldo)
-   ✅ Centang <b>Enable Spot &amp; Margin Trading</b> (untuk beli koin via 1-Click Buy)
+   ✅ Centang <b>Enable Spot &amp; Margin Trading</b> (untuk fitur 1-Click Buy &amp; Sell Spot)
    ❌ <b>JANGAN CENTANG "Enable Withdrawals"</b> (demi keamanan dana Anda!)
 6. Salin <b>API Key</b> dan <b>Secret Key</b> yang muncul.
 

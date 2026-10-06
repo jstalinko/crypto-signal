@@ -32,6 +32,15 @@ export interface OrderExecutionResult {
   transactTime: number;
 }
 
+export interface SymbolLotInfo {
+  symbol: string;
+  baseAsset: string;
+  quoteAsset: string;
+  stepSize: number;
+  minQty: number;
+  minNotional: number;
+}
+
 export class BinanceTradingClient {
   private primaryBaseUrl: string;
   private fallbackBaseUrl?: string;
@@ -399,30 +408,120 @@ export class BinanceTradingClient {
     }
   }
 
+  private symbolLotCache: Map<string, SymbolLotInfo> = new Map();
+
   /**
-   * Execute Market Sell on Binance Spot
+   * Get symbol lot size, minQty, and minNotional filters from Binance exchangeInfo
+   */
+  public async getSymbolLotInfo(symbol: string): Promise<SymbolLotInfo> {
+    const clean = symbol.toUpperCase().replace(/[^A-Z0-9]/g, '');
+    if (this.symbolLotCache.has(clean)) {
+      return this.symbolLotCache.get(clean)!;
+    }
+
+    try {
+      const response = await this.executeWithFallback(url =>
+        this.httpClient.get(`/api/v3/exchangeInfo?symbol=${clean}`, {
+          baseURL: url,
+          timeout: 10000
+        })
+      );
+
+      const symData = response.data?.symbols?.[0];
+      if (symData) {
+        let stepSize = 0.0001;
+        let minQty = 0.0001;
+        let minNotional = 5.0;
+
+        for (const f of symData.filters || []) {
+          if (f.filterType === 'LOT_SIZE') {
+            if (f.stepSize) stepSize = parseFloat(f.stepSize);
+            if (f.minQty) minQty = parseFloat(f.minQty);
+          }
+          if (f.filterType === 'NOTIONAL' || f.filterType === 'MIN_NOTIONAL') {
+            if (f.minNotional) minNotional = parseFloat(f.minNotional);
+          }
+        }
+
+        const info: SymbolLotInfo = {
+          symbol: clean,
+          baseAsset: symData.baseAsset || clean.replace('USDT', ''),
+          quoteAsset: symData.quoteAsset || 'USDT',
+          stepSize: stepSize > 0 ? stepSize : 0.0001,
+          minQty: minQty > 0 ? minQty : 0.0001,
+          minNotional: minNotional > 0 ? minNotional : 5.0
+        };
+
+        this.symbolLotCache.set(clean, info);
+        return info;
+      }
+    } catch (err) {
+      logger.warn(`Could not fetch exchangeInfo for ${clean}: ${(err as Error).message}`);
+    }
+
+    const fallback: SymbolLotInfo = {
+      symbol: clean,
+      baseAsset: clean.replace('USDT', ''),
+      quoteAsset: 'USDT',
+      stepSize: 0.0001,
+      minQty: 0.0001,
+      minNotional: 5.0
+    };
+    return fallback;
+  }
+
+  /**
+   * Format quantity down to the nearest lot size stepSize to avoid LOT_SIZE errors
+   */
+  public formatQuantityToStepSize(quantity: number, stepSize: number): string {
+    if (stepSize <= 0) return quantity.toString();
+    const stepStr = stepSize.toString();
+    let precision = 0;
+    if (stepStr.includes('e-')) {
+      precision = parseInt(stepStr.split('e-')[1], 10);
+    } else if (stepStr.includes('.')) {
+      precision = stepStr.split('.')[1].length;
+    }
+    const factor = Math.pow(10, precision);
+    const rounded = Math.floor((quantity + 1e-12) * factor) / factor;
+    return rounded.toFixed(precision);
+  }
+
+  /**
+   * Execute Market Sell on Binance Spot with automated stepSize LOT_SIZE precision
    */
   public async executeMarketSell(
     apiKey: string,
     apiSecret: string,
     symbol: string,
-    quantity: number
+    quantity: number | string
   ): Promise<OrderExecutionResult> {
     const cleanSymbol = symbol.toUpperCase().replace(/[^A-Z0-9]/g, '');
     const timestamp = Date.now();
 
-    const query = `symbol=${cleanSymbol}&side=SELL&type=MARKET&quantity=${quantity}&recvWindow=60000&timestamp=${timestamp}`;
+    let qtyStr: string;
+    if (typeof quantity === 'number') {
+      const lotInfo = await this.getSymbolLotInfo(cleanSymbol);
+      qtyStr = this.formatQuantityToStepSize(quantity, lotInfo.stepSize);
+    } else {
+      qtyStr = quantity;
+    }
+
+    const query = `symbol=${cleanSymbol}&side=SELL&type=MARKET&quantity=${qtyStr}&recvWindow=60000&timestamp=${timestamp}`;
     const signature = this.createSignature(query, apiSecret);
 
     try {
-      const response = await this.httpClient.post(
-        `/api/v3/order?${query}&signature=${signature}`,
-        null,
-        {
-          headers: {
-            'X-MBX-APIKEY': apiKey
+      const response = await this.executeWithFallback(url =>
+        this.httpClient.post(
+          `/api/v3/order?${query}&signature=${signature}`,
+          null,
+          {
+            baseURL: url,
+            headers: {
+              'X-MBX-APIKEY': apiKey
+            }
           }
-        }
+        )
       );
 
       const data = response.data;

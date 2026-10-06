@@ -26,10 +26,14 @@ import {
   formatBinanceBalanceMessage,
   formatConnectInstructionsMessage,
   formatBuyConfirmMessage,
+  formatSellConfirmMessage,
+  formatSellSelectMenuMessage,
+  formatPortfolioSellSelectMessage,
   formatOrderReceiptMessage,
   formatBinanceAccountNotLoggedInMessage,
   formatBinanceAccountLoggedInMessage,
-  formatBinanceApiGuideMessage
+  formatBinanceApiGuideMessage,
+  formatPnlReportMessage
 } from './formatter.js';
 import { SignalResult } from '../strategy/signal.js';
 import { TradeWatcherService } from '../watcher/tradeWatcher.js';
@@ -60,6 +64,10 @@ const RESERVED_COMMANDS = new Set([
   'watchers',
   'active',
   'unwatch',
+  'pnl',
+  'profit',
+  'rekap',
+  'history',
   'analyze',
   'entry',
   'cek',
@@ -77,13 +85,18 @@ const RESERVED_COMMANDS = new Set([
   'disconnect',
   'logout',
   'login',
-  'cancel'
+  'cancel',
+  'buy',
+  'beli',
+  'sell',
+  'jual'
 ]);
 
 export interface UserSessionState {
-  step: 'AWAITING_API_KEY' | 'AWAITING_API_SECRET' | 'AWAITING_CUSTOM_BUY_AMOUNT';
+  step: 'AWAITING_API_KEY' | 'AWAITING_API_SECRET' | 'AWAITING_CUSTOM_BUY_AMOUNT' | 'AWAITING_CUSTOM_SELL_AMOUNT';
   apiKey?: string;
   buySymbol?: string;
+  sellSymbol?: string;
 }
 
 export class TelegramBotService {
@@ -118,18 +131,18 @@ export class TelegramBotService {
   }
 
   /**
-   * Main persistent reply keyboard with core shortcuts
+   * Main persistent reply keyboard with core shortcuts (simplified without parentheses)
    */
   public getMainReplyKeyboard(isAdmin: boolean = false) {
     const buttons = [
-      ['🔍 Screener (/find)', '⚡ Scalp Radar (/scalp)'],
-      ['🎯 Daily Entry (/daily)', '📋 Watchers (/watchers)'],
-      ['💼 Akun Binance', '📊 Scan Watchlist (/scan)'],
-      ['ℹ️ Help & Status (/help)']
+      ['🔍 Screener', '⚡ Scalp Radar'],
+      ['🎯 Daily Entry', '📋 Watchers'],
+      ['💼 Akun Binance', '📈 Rekap PnL'],
+      ['📊 Scan Watchlist', 'ℹ️ Help & Status']
     ];
 
     if (isAdmin) {
-      buttons.push(['👑 Admin Menu (/admin)']);
+      buttons.push(['👑 Admin Menu']);
     }
 
     return Markup.keyboard(buttons).resize();
@@ -141,30 +154,64 @@ export class TelegramBotService {
   public getMainInlineKeyboard(isAdmin: boolean = false) {
     const buttons = [
       [
-        Markup.button.callback('🔍 Screener (/find)', 'menu:find'),
-        Markup.button.callback('⚡ Scalp Radar (/scalp)', 'menu:scalp')
+        Markup.button.callback('🔍 Screener', 'menu:find'),
+        Markup.button.callback('⚡ Scalp Radar', 'menu:scalp')
       ],
       [
-        Markup.button.callback('🎯 Daily Entry (/daily)', 'menu:daily'),
-        Markup.button.callback('📋 Watchers (/watchers)', 'menu:watchers')
+        Markup.button.callback('🎯 Daily Entry', 'menu:daily'),
+        Markup.button.callback('📋 Watchers', 'menu:watchers')
       ],
       [
         Markup.button.callback('💼 Akun Binance', 'binance:hub'),
-        Markup.button.callback('📊 Scan Watchlist (/scan)', 'menu:scan')
+        Markup.button.callback('📈 Rekap PnL', 'menu:pnl')
       ],
       [
-        Markup.button.callback('⚙️ Bot Status (/status)', 'menu:status'),
-        Markup.button.callback('📖 Panduan & Help (/help)', 'menu:help')
+        Markup.button.callback('📊 Scan Watchlist', 'menu:scan'),
+        Markup.button.callback('⚙️ Bot Status', 'menu:status')
+      ],
+      [
+        Markup.button.callback('📖 Panduan & Help', 'menu:help')
       ]
     ];
 
     if (isAdmin) {
       buttons.push([
-        Markup.button.callback('👑 Admin Panel (/admin)', 'menu:admin')
+        Markup.button.callback('👑 Admin Panel', 'menu:admin')
       ]);
     }
 
     return Markup.inlineKeyboard(buttons);
+  }
+
+  /**
+   * PnL report interactive inline keyboard
+   */
+  public getPnlInlineKeyboard(isAdmin: boolean = false, isGlobal: boolean = false) {
+    const rows: any[] = [
+      [
+        Markup.button.callback('🔄 Refresh PnL', isGlobal ? 'pnl:refresh_global' : 'pnl:refresh'),
+        Markup.button.callback('📋 Pantauan Aktif', 'menu:watchers')
+      ]
+    ];
+
+    if (isAdmin) {
+      rows.push([
+        isGlobal
+          ? Markup.button.callback('👤 PnL Akun Saya', 'pnl:personal')
+          : Markup.button.callback('🌐 PnL Global (Semua User)', 'pnl:global'),
+        Markup.button.callback('🗑️ Reset Histori', 'pnl:reset_confirm')
+      ]);
+    } else {
+      rows.push([
+        Markup.button.callback('🗑️ Reset Histori', 'pnl:reset_confirm')
+      ]);
+    }
+
+    rows.push([
+      Markup.button.callback('« Menu Utama', 'menu:main')
+    ]);
+
+    return Markup.inlineKeyboard(rows);
   }
 
   /**
@@ -331,16 +378,17 @@ export class TelegramBotService {
         const isAdmin = this.userManager.isAdmin(chatId);
         let menuText = `📱 <b>CHAEWON CRYPTO SIGNAL — MAIN MENU</b>\n\n` +
           `Pilih perintah melalui tombol menu interaktif berikut atau gunakan tombol keyboard di bawah layar:\n\n` +
-          `• 🔍 <b>Screener (/find)</b>: Scan 30 koin aktif di Binance\n` +
-          `• ⚡ <b>Scalp Radar (/scalp)</b>: Momentum cepat timeframe 15m/30m\n` +
-          `• 🎯 <b>Daily Entry (/daily)</b>: Rekomendasi entry trading harian (1h)\n` +
-          `• 📋 <b>Watchers (/watchers)</b>: Pantauan posisi live trade (TP/SL)\n` +
+          `• 🔍 <b>Screener</b>: Scan 30 koin aktif di Binance\n` +
+          `• ⚡ <b>Scalp Radar</b>: Momentum cepat timeframe 15m/30m\n` +
+          `• 🎯 <b>Daily Entry</b>: Rekomendasi entry trading harian (1h)\n` +
+          `• 📋 <b>Watchers</b>: Pantauan posisi live trade (TP/SL)\n` +
           `• 💼 <b>Akun Binance</b>: Cek portofolio saldo live &amp; 1-Click Buy\n` +
-          `• 📊 <b>Scan Watchlist (/scan)</b>: Scan pair koin di daftar pantauan\n` +
-          `• ℹ️ <b>Help &amp; Status (/help)</b>: Info status bot &amp; panduan risiko`;
+          `• 📈 <b>Rekap PnL</b>: Laporan akumulasi profit &amp; performa trade watcher\n` +
+          `• 📊 <b>Scan Watchlist</b>: Scan pair koin di daftar pantauan\n` +
+          `• ℹ️ <b>Help &amp; Status</b>: Info status bot &amp; panduan risiko`;
 
         if (isAdmin) {
-          menuText += `\n• 👑 <b>Admin Panel (/admin)</b>: Kelola pengguna &amp; persetujuan`;
+          menuText += `\n• 👑 <b>Admin Panel</b>: Kelola pengguna &amp; persetujuan`;
         }
 
         await ctx.reply(menuText, {
@@ -463,6 +511,42 @@ export class TelegramBotService {
       }
     };
 
+    const handlePnl = async (ctx: any, isGlobal: boolean = false, editMessage: boolean = false) => {
+      try {
+        if (!this.watcherService) {
+          await ctx.reply('ℹ️ Watcher service belum diaktifkan.');
+          return;
+        }
+
+        const chatId = ctx.chat?.id?.toString() || '';
+        const isAdmin = this.userManager.isAdmin(chatId);
+        const targetChatId = (isAdmin && isGlobal) ? undefined : chatId;
+
+        // Refresh live prices so unrealized floating PnL is completely up to date
+        await this.watcherService.checkWatchers().catch(() => {});
+
+        const summary = this.watcherService.generatePnlSummary(targetChatId);
+        const text = formatPnlReportMessage(summary, {
+          isGlobal: isAdmin && isGlobal,
+          isAdmin
+        });
+
+        const keyboard = this.getPnlInlineKeyboard(isAdmin, isGlobal);
+
+        if (editMessage && ctx.callbackQuery) {
+          await ctx.editMessageText(text, {
+            parse_mode: 'HTML',
+            ...keyboard
+          }).catch(() => ctx.reply(text, { parse_mode: 'HTML', ...keyboard }));
+        } else {
+          await this.replySafe(ctx, text, keyboard);
+        }
+      } catch (err) {
+        logger.error(`Error handling /pnl: ${(err as Error).message}`);
+        await ctx.reply(`❌ Gagal mengambil laporan PnL: ${escapeHtml((err as Error).message)}`);
+      }
+    };
+
     const handleScan = async (ctx: any, timeframe?: string) => {
       try {
         if (!this.handlers) return;
@@ -530,10 +614,13 @@ export class TelegramBotService {
           const keyboard = Markup.inlineKeyboard([
             [
               Markup.button.callback('🔄 Refresh Saldo', 'binance:refresh'),
-              Markup.button.callback('🔄 Ganti API Key', 'binance:relogin')
+              Markup.button.callback('💰 Jual Aset Spot', 'binance:sell_select')
             ],
             [
-              Markup.button.callback('❌ Putuskan Akun (Logout)', 'binance:logout'),
+              Markup.button.callback('🔄 Ganti API Key', 'binance:relogin'),
+              Markup.button.callback('❌ Putuskan Akun (Logout)', 'binance:logout')
+            ],
+            [
               Markup.button.callback('« Menu Utama', 'menu:main')
             ]
           ]);
@@ -636,6 +723,7 @@ export class TelegramBotService {
     });
 
     this.bot.command(['watchers', 'active'], handleWatchers);
+    this.bot.command(['pnl', 'profit', 'rekap', 'history'], (ctx) => handlePnl(ctx));
 
     // /unwatch command: Stop watching a specific trade
     this.bot.command('unwatch', async (ctx) => {
@@ -701,11 +789,14 @@ export class TelegramBotService {
         const result = await this.handlers.onScanSymbol(cleanSymbol, tf);
         const text = formatSingleAnalysisMessage(result);
 
-        // Attach "Notice Me" and "Beli Spot" action buttons
+        // Attach "Notice Me", "Beli Spot", and "Jual Spot" action buttons
         const inlineKeyboard = Markup.inlineKeyboard([
           [
-            Markup.button.callback('🔔 Notice Me (Pantau)', `notice:${result.symbol}:${result.timeframe}`),
-            Markup.button.callback('🛒 Beli Spot', `buy:${result.symbol}`)
+            Markup.button.callback('🔔 Notice Me (Pantau)', `notice:${result.symbol}:${result.timeframe}`)
+          ],
+          [
+            Markup.button.callback('🛒 Beli Spot', `buy:${result.symbol}`),
+            Markup.button.callback('💰 Jual Spot', `sell:${result.symbol}`)
           ]
         ]);
 
@@ -747,6 +838,426 @@ export class TelegramBotService {
     this.bot.command('analyze', handleAnalyzeCommand);
     this.bot.command('entry', handleAnalyzeCommand);
     this.bot.command('cek', handleAnalyzeCommand);
+
+    // 1-Click Buy & Sell Helpers
+    const triggerBuyMenu = async (ctx: any, rawSymbol: string) => {
+      let symbol = rawSymbol.toUpperCase();
+      if (!symbol.endsWith('USDT')) symbol = `${symbol}USDT`;
+      const chatId = ctx.chat?.id?.toString() || '';
+
+      const creds = this.userManager.getBinanceCredentials(chatId);
+      if (!creds) {
+        if (ctx.callbackQuery) await ctx.answerCbQuery('⚠️ Akun Binance belum terhubung.').catch(() => {});
+        await ctx.reply(
+          `⚠️ <b>AKUN BINANCE BELUM TERHUBUNG</b>\n\n` +
+          `Untuk mengeksekusi pembelian 1-Click Spot untuk <b>${formatSymbolDisplay(symbol)}</b>, silakan hubungkan API Key Binance Anda terlebih dahulu.`,
+          {
+            parse_mode: 'HTML',
+            ...Markup.inlineKeyboard([
+              [Markup.button.callback('💼 Hubungkan Akun Sekarang', 'binance:login')]
+            ])
+          }
+        );
+        return;
+      }
+
+      if (!creds.canTrade) {
+        if (ctx.callbackQuery) await ctx.answerCbQuery('⚠️ Izin trading tidak aktif di API Key Anda.').catch(() => {});
+        await ctx.reply(
+          `⚠️ <b>IZIN TRADING TIDAK AKTIF</b>\n\n` +
+          `API Key Anda saat ini dalam mode <i>Read-Only</i>. Pastikan Anda mencentang opsi <b>Enable Spot &amp; Margin Trading</b> pada menu API Management di Binance.`,
+          { parse_mode: 'HTML' }
+        );
+        return;
+      }
+
+      if (ctx.callbackQuery) await ctx.answerCbQuery().catch(() => {});
+
+      let freeUsdt = 0;
+      try {
+        const accInfo = await this.tradingClient.getAccountBalances(creds.apiKey, creds.apiSecret);
+        const usdtItem = accInfo.balances.find(b => b.asset === 'USDT');
+        freeUsdt = usdtItem ? usdtItem.free : 0;
+      } catch {}
+
+      const text = `🛒 <b>PILIH NOMINAL BELI SPOT: ${formatSymbolDisplay(symbol)}</b>\n\n` +
+        `💵 Saldo USDT Tersedia: <b>$${freeUsdt.toFixed(2)} USDT</b>\n` +
+        `Pilih nominal USDT yang ingin dibelanjakan:`;
+
+      await ctx.reply(text, {
+        parse_mode: 'HTML',
+        ...Markup.inlineKeyboard([
+          [
+            Markup.button.callback('💵 10 USDT', `buy_amt:${symbol}:10`),
+            Markup.button.callback('💵 25 USDT', `buy_amt:${symbol}:25`)
+          ],
+          [
+            Markup.button.callback('💵 50 USDT', `buy_amt:${symbol}:50`),
+            Markup.button.callback('💵 100 USDT', `buy_amt:${symbol}:100`)
+          ],
+          [
+            Markup.button.callback('✏️ Nominal Kustom', `buy_amt:${symbol}:custom`),
+            Markup.button.callback('❌ Batal', 'buy:cancel')
+          ]
+        ])
+      });
+    };
+
+    const triggerBuyConfirm = async (ctx: any, rawSymbol: string, usdtAmount: number) => {
+      let symbol = rawSymbol.toUpperCase();
+      if (!symbol.endsWith('USDT')) symbol = `${symbol}USDT`;
+      const chatId = ctx.chat?.id?.toString() || '';
+
+      if (isNaN(usdtAmount) || usdtAmount < 5) {
+        await ctx.reply('❌ Nominal pembelian minimal $5.00 USDT.');
+        return;
+      }
+
+      const creds = this.userManager.getBinanceCredentials(chatId);
+      if (!creds) {
+        await ctx.reply('❌ Akun Binance belum terhubung. Silakan hubungkan via /connect.');
+        return;
+      }
+
+      let currentPrice = 0;
+      let freeUsdt = 0;
+      try {
+        if (this.handlers) {
+          const scanRes = await this.handlers.onScanSymbol(symbol);
+          currentPrice = scanRes.entryPrice;
+        }
+        if (currentPrice <= 0) {
+          const prices = await this.tradingClient.fetchTickerPrices();
+          currentPrice = prices.get(symbol) || 0;
+        }
+        const accInfo = await this.tradingClient.getAccountBalances(creds.apiKey, creds.apiSecret);
+        const usdtItem = accInfo.balances.find(b => b.asset === 'USDT');
+        freeUsdt = usdtItem ? usdtItem.free : 0;
+      } catch {}
+
+      const confirmMsg = formatBuyConfirmMessage(symbol, usdtAmount, currentPrice, freeUsdt);
+      await ctx.reply(confirmMsg, {
+        parse_mode: 'HTML',
+        ...Markup.inlineKeyboard([
+          [
+            Markup.button.callback('✅ Ya, Eksekusi Beli', `buy_confirm:${symbol}:${usdtAmount}`),
+            Markup.button.callback('❌ Batalkan', 'buy:cancel')
+          ]
+        ])
+      });
+    };
+
+    const triggerSellMenu = async (ctx: any, rawSymbol: string) => {
+      let symbol = rawSymbol.toUpperCase();
+      if (!symbol.endsWith('USDT')) symbol = `${symbol}USDT`;
+      const chatId = ctx.chat?.id?.toString() || '';
+
+      const creds = this.userManager.getBinanceCredentials(chatId);
+      if (!creds) {
+        if (ctx.callbackQuery) await ctx.answerCbQuery('⚠️ Akun Binance belum terhubung.').catch(() => {});
+        await ctx.reply(
+          `⚠️ <b>AKUN BINANCE BELUM TERHUBUNG</b>\n\n` +
+          `Untuk mengeksekusi penjualan Spot untuk <b>${formatSymbolDisplay(symbol)}</b>, silakan hubungkan API Key Binance Anda terlebih dahulu.`,
+          {
+            parse_mode: 'HTML',
+            ...Markup.inlineKeyboard([
+              [Markup.button.callback('💼 Hubungkan Akun Sekarang', 'binance:login')]
+            ])
+          }
+        );
+        return;
+      }
+
+      if (!creds.canTrade) {
+        if (ctx.callbackQuery) await ctx.answerCbQuery('⚠️ Izin trading tidak aktif di API Key Anda.').catch(() => {});
+        await ctx.reply(
+          `⚠️ <b>IZIN TRADING TIDAK AKTIF</b>\n\n` +
+          `API Key Anda saat ini dalam mode <i>Read-Only</i>. Pastikan Anda mencentang opsi <b>Enable Spot &amp; Margin Trading</b> pada menu API Management di Binance.`,
+          { parse_mode: 'HTML' }
+        );
+        return;
+      }
+
+      if (ctx.callbackQuery) await ctx.answerCbQuery().catch(() => {});
+
+      const lotInfo = await this.tradingClient.getSymbolLotInfo(symbol);
+      const baseAsset = lotInfo.baseAsset;
+
+      let freeBase = 0;
+      try {
+        const accInfo = await this.tradingClient.getAccountBalances(creds.apiKey, creds.apiSecret);
+        const baseItem = accInfo.balances.find(b => b.asset.toUpperCase() === baseAsset.toUpperCase());
+        freeBase = baseItem ? baseItem.free : 0;
+      } catch (fetchErr: any) {
+        logger.warn(`Could not get balance for ${baseAsset}: ${fetchErr.message}`);
+      }
+
+      if (freeBase <= 0) {
+        await ctx.reply(
+          `❌ <b>SALDO TIDAK MENCUKUPI</b>\n\n` +
+          `Anda tidak memiliki saldo <b>${baseAsset}</b> di Spot Wallet Binance (Saldo: <code>0 ${baseAsset}</code>).\n\n` +
+          `💡 <i>Gunakan tombol di bawah untuk membeli koin ini terlebih dahulu.</i>`,
+          {
+            parse_mode: 'HTML',
+            ...Markup.inlineKeyboard([
+              [
+                Markup.button.callback(`🛒 Beli Spot ${baseAsset}`, `buy:${symbol}`),
+                Markup.button.callback('💼 Akun Binance', 'binance:hub')
+              ]
+            ])
+          }
+        );
+        return;
+      }
+
+      let currentPrice = 0;
+      try {
+        if (this.handlers) {
+          const scanRes = await this.handlers.onScanSymbol(symbol);
+          currentPrice = scanRes.entryPrice;
+        }
+        if (currentPrice <= 0) {
+          const prices = await this.tradingClient.fetchTickerPrices();
+          currentPrice = prices.get(symbol) || 0;
+        }
+      } catch {
+        const prices = await this.tradingClient.fetchTickerPrices();
+        currentPrice = prices.get(symbol) || 0;
+      }
+
+      const totalValue = freeBase * currentPrice;
+
+      if (totalValue > 0 && totalValue < lotInfo.minNotional) {
+        await ctx.reply(
+          `⚠️ <b>SALDO DI BAWAH MINIMUM ORDER (DUST)</b>\n\n` +
+          `Saldo <b>${baseAsset}</b> Anda: <b>${freeBase} ${baseAsset}</b> (~<b>$${totalValue.toFixed(2)} USDT</b>).\n` +
+          `Binance mewajibkan transaksi spot bernilai minimal <b>$${lotInfo.minNotional.toFixed(2)} USDT</b>.\n\n` +
+          `💡 <i>Untuk saldo bernilai kecil (dust), Anda dapat menukarnya langsung ke BNB menggunakan fitur <b>Convert Small Balances to BNB</b> di aplikasi Binance.</i>`,
+          {
+            parse_mode: 'HTML',
+            ...Markup.inlineKeyboard([
+              [
+                Markup.button.callback(`🛒 Tambah Beli ${baseAsset}`, `buy:${symbol}`),
+                Markup.button.callback('💼 Akun Binance', 'binance:hub')
+              ]
+            ])
+          }
+        );
+        return;
+      }
+
+      const menuText = formatSellSelectMenuMessage(symbol, freeBase, currentPrice, lotInfo);
+
+      await ctx.reply(menuText, {
+        parse_mode: 'HTML',
+        ...Markup.inlineKeyboard([
+          [
+            Markup.button.callback('25%', `sell_pct:${symbol}:25`),
+            Markup.button.callback('50%', `sell_pct:${symbol}:50`)
+          ],
+          [
+            Markup.button.callback('75%', `sell_pct:${symbol}:75`),
+            Markup.button.callback('100% (Semua)', `sell_pct:${symbol}:100`)
+          ],
+          [
+            Markup.button.callback('✏️ Jumlah Kustom', `sell_amt:${symbol}:custom`),
+            Markup.button.callback('❌ Batal', 'sell:cancel')
+          ]
+        ])
+      });
+    };
+
+    const triggerSellConfirm = async (ctx: any, rawSymbol: string, param: string) => {
+      let symbol = rawSymbol.toUpperCase();
+      if (!symbol.endsWith('USDT')) symbol = `${symbol}USDT`;
+      const chatId = ctx.chat?.id?.toString() || '';
+
+      const creds = this.userManager.getBinanceCredentials(chatId);
+      if (!creds) {
+        await ctx.reply('❌ Akun Binance belum terhubung. Silakan hubungkan via /connect.');
+        return;
+      }
+
+      if (!creds.canTrade) {
+        await ctx.reply(
+          `⚠️ <b>IZIN TRADING TIDAK AKTIF</b>\n\n` +
+          `API Key Anda saat ini dalam mode Read-Only. Aktifkan <b>Enable Spot &amp; Margin Trading</b> di Binance.`,
+          { parse_mode: 'HTML' }
+        );
+        return;
+      }
+
+      const lotInfo = await this.tradingClient.getSymbolLotInfo(symbol);
+      const baseAsset = lotInfo.baseAsset;
+
+      let freeBase = 0;
+      let currentPrice = 0;
+      try {
+        const accInfo = await this.tradingClient.getAccountBalances(creds.apiKey, creds.apiSecret);
+        const baseItem = accInfo.balances.find(b => b.asset.toUpperCase() === baseAsset.toUpperCase());
+        freeBase = baseItem ? baseItem.free : 0;
+
+        if (this.handlers) {
+          const scanRes = await this.handlers.onScanSymbol(symbol);
+          currentPrice = scanRes.entryPrice;
+        }
+        if (currentPrice <= 0) {
+          const prices = await this.tradingClient.fetchTickerPrices();
+          currentPrice = prices.get(symbol) || 0;
+        }
+      } catch {
+        const prices = await this.tradingClient.fetchTickerPrices();
+        currentPrice = prices.get(symbol) || 0;
+      }
+
+      if (freeBase <= 0) {
+        await ctx.reply(`❌ Anda tidak memiliki saldo <b>${baseAsset}</b> untuk dijual.`, { parse_mode: 'HTML' });
+        return;
+      }
+
+      let rawQty = 0;
+      let pctDisplay = 'Kustom';
+
+      if (param.endsWith('%')) {
+        const pctVal = parseFloat(param.replace('%', ''));
+        if (isNaN(pctVal) || pctVal <= 0 || pctVal > 100) {
+          await ctx.reply('❌ Persentase tidak valid (harus 1% - 100%).');
+          return;
+        }
+        rawQty = (pctVal / 100) * freeBase;
+        pctDisplay = `${pctVal}%`;
+      } else {
+        const cleaned = param.replace(/[^0-9.]/g, '');
+        rawQty = parseFloat(cleaned);
+        if (isNaN(rawQty) || rawQty <= 0) {
+          await ctx.reply('❌ Jumlah koin tidak valid.');
+          return;
+        }
+        if (rawQty > freeBase) {
+          await ctx.reply(`❌ Jumlah melebihi saldo tersedia (${freeBase} ${baseAsset}).`);
+          return;
+        }
+        pctDisplay = freeBase > 0 ? `${((rawQty / freeBase) * 100).toFixed(1)}%` : 'Kustom';
+      }
+
+      const formattedQtyStr = this.tradingClient.formatQuantityToStepSize(rawQty, lotInfo.stepSize);
+      const sellQty = parseFloat(formattedQtyStr);
+
+      if (sellQty <= 0 || sellQty < lotInfo.minQty) {
+        await ctx.reply(`❌ Jumlah koin (${sellQty} ${baseAsset}) di bawah batas minimum Binance (${lotInfo.minQty} ${baseAsset}).`);
+        return;
+      }
+
+      const estNotional = sellQty * currentPrice;
+      if (estNotional < lotInfo.minNotional) {
+        await ctx.reply(`❌ Nilai koin (~$${estNotional.toFixed(2)} USDT) di bawah batas minimum Binance ($${lotInfo.minNotional.toFixed(2)} USDT).`);
+        return;
+      }
+
+      const confirmMsg = formatSellConfirmMessage(symbol, sellQty, pctDisplay, currentPrice, freeBase);
+      await ctx.reply(confirmMsg, {
+        parse_mode: 'HTML',
+        ...Markup.inlineKeyboard([
+          [
+            Markup.button.callback('✅ Ya, Eksekusi Jual', `sell_confirm:${symbol}:${formattedQtyStr}`),
+            Markup.button.callback('❌ Batalkan', 'sell:cancel')
+          ]
+        ])
+      });
+    };
+
+    const handleBuyCommand = async (ctx: any) => {
+      const parts = ctx.message.text.trim().split(/\s+/);
+      const coin = parts[1];
+      const usdtAmtStr = parts[2];
+
+      if (!coin) {
+        await this.replySafe(
+          ctx,
+          `⚠️ <b>Format Penggunaan:</b>\n<code>/buy &lt;koin&gt; [nominal_usdt]</code>\n\n` +
+          `<b>Contoh:</b>\n` +
+          `• <code>/buy SOL</code> (Buka menu pilih nominal beli)\n` +
+          `• <code>/buy SOL 25</code> (Langsung konfirmasi beli $25 USDT)\n` +
+          `• <code>/buy DOGE 50</code> (Langsung konfirmasi beli $50 USDT)`
+        );
+        return;
+      }
+
+      const sym = coin.toUpperCase().endsWith('USDT') ? coin.toUpperCase() : `${coin.toUpperCase()}USDT`;
+      if (usdtAmtStr) {
+        const amt = parseFloat(usdtAmtStr.replace(/[^0-9.]/g, ''));
+        await triggerBuyConfirm(ctx, sym, amt);
+      } else {
+        await triggerBuyMenu(ctx, sym);
+      }
+    };
+
+    const handleSellCommand = async (ctx: any) => {
+      const parts = ctx.message.text.trim().split(/\s+/);
+      const coin = parts[1];
+      const param = parts[2];
+
+      if (!coin) {
+        const chatId = ctx.chat?.id?.toString() || '';
+        const creds = this.userManager.getBinanceCredentials(chatId);
+        if (!creds) {
+          await this.replySafe(
+            ctx,
+            `⚠️ <b>Format Penggunaan:</b>\n<code>/sell &lt;koin&gt; [persentase|jumlah]</code>\n\n` +
+            `<b>Contoh:</b>\n` +
+            `• <code>/sell SOL</code> (Buka menu pilih % jual)\n` +
+            `• <code>/sell SOL 50%</code> (Langsung konfirmasi jual 50%)\n` +
+            `• <code>/sell SOL 1.5</code> (Langsung konfirmasi jual 1.5 SOL)\n\n` +
+            `💡 <i>Hubungkan akun Binance via /binance untuk menjual koin.</i>`
+          );
+          return;
+        }
+
+        try {
+          const accInfo = await this.tradingClient.getAccountBalances(creds.apiKey, creds.apiSecret);
+          const stablecoins = new Set(['USDT', 'USDC', 'FDUSD', 'BUSD', 'DAI', 'TUSD']);
+          const sellable = accInfo.balances.filter(b => !stablecoins.has(b.asset.toUpperCase()) && b.free > 0 && b.estimatedUsdt >= 4.5);
+
+          if (sellable.length > 0) {
+            const msgText = formatPortfolioSellSelectMessage(sellable);
+            const buttons: any[] = [];
+            let currentRow: any[] = [];
+            for (const item of sellable) {
+              const sym = `${item.asset}USDT`;
+              currentRow.push(Markup.button.callback(`💰 Jual ${item.asset} ($${item.estimatedUsdt.toFixed(1)})`, `sell:${sym}`));
+              if (currentRow.length === 2) {
+                buttons.push(currentRow);
+                currentRow = [];
+              }
+            }
+            if (currentRow.length > 0) buttons.push(currentRow);
+            buttons.push([Markup.button.callback('« Menu Utama', 'menu:main')]);
+            await ctx.reply(msgText, { parse_mode: 'HTML', ...Markup.inlineKeyboard(buttons) });
+            return;
+          }
+        } catch {}
+
+        await this.replySafe(
+          ctx,
+          `⚠️ <b>Format Penggunaan:</b>\n<code>/sell &lt;koin&gt; [persentase|jumlah]</code>\n\n` +
+          `<b>Contoh:</b>\n` +
+          `• <code>/sell SOL</code>\n` +
+          `• <code>/sell SOL 50%</code>\n` +
+          `• <code>/sell SOL 1.5</code>`
+        );
+        return;
+      }
+
+      const sym = coin.toUpperCase().endsWith('USDT') ? coin.toUpperCase() : `${coin.toUpperCase()}USDT`;
+      if (param) {
+        await triggerSellConfirm(ctx, sym, param);
+      } else {
+        await triggerSellMenu(ctx, sym);
+      }
+    };
+
+    this.bot.command(['buy', 'beli'], handleBuyCommand);
+    this.bot.command(['sell', 'jual'], handleSellCommand);
 
     // 3. Callback Query Handlers
     // Notice Me clicked
@@ -830,6 +1341,49 @@ export class TelegramBotService {
     this.bot.action('menu:watchers', async (ctx) => {
       await ctx.answerCbQuery().catch(() => {});
       await handleWatchers(ctx);
+    });
+    this.bot.action('menu:pnl', async (ctx) => {
+      await ctx.answerCbQuery().catch(() => {});
+      await handlePnl(ctx, false, true);
+    });
+    this.bot.action('pnl:refresh', async (ctx) => {
+      await ctx.answerCbQuery('Memperbarui data PnL...').catch(() => {});
+      await handlePnl(ctx, false, true);
+    });
+    this.bot.action('pnl:refresh_global', async (ctx) => {
+      await ctx.answerCbQuery('Memperbarui data PnL global...').catch(() => {});
+      await handlePnl(ctx, true, true);
+    });
+    this.bot.action('pnl:global', async (ctx) => {
+      await ctx.answerCbQuery().catch(() => {});
+      await handlePnl(ctx, true, true);
+    });
+    this.bot.action('pnl:personal', async (ctx) => {
+      await ctx.answerCbQuery().catch(() => {});
+      await handlePnl(ctx, false, true);
+    });
+    this.bot.action('pnl:reset_confirm', async (ctx) => {
+      await ctx.answerCbQuery().catch(() => {});
+      const confirmText = `⚠️ <b>KONFIRMASI BERSIHKAN HISTORI PnL</b>\n\n` +
+        `Apakah Anda yakin ingin menghapus seluruh riwayat trade watchers Anda?\n` +
+        `Data performa &amp; win rate yang telah tercatat akan dibersihkan. Tindakan ini tidak dapat dibatalkan.`;
+      const keyboard = Markup.inlineKeyboard([
+        [
+          Markup.button.callback('🗑️ Ya, Hapus Seluruh Histori', 'pnl:reset_execute'),
+          Markup.button.callback('❌ Batal', 'pnl:refresh')
+        ]
+      ]);
+      await ctx.editMessageText(confirmText, { parse_mode: 'HTML', ...keyboard }).catch(() => {
+        ctx.reply(confirmText, { parse_mode: 'HTML', ...keyboard });
+      });
+    });
+    this.bot.action('pnl:reset_execute', async (ctx) => {
+      const chatId = ctx.chat?.id?.toString() || '';
+      if (this.watcherService) {
+        this.watcherService.clearHistory(chatId);
+      }
+      await ctx.answerCbQuery('Histori PnL berhasil dibersihkan!').catch(() => {});
+      await handlePnl(ctx, false, true);
     });
     this.bot.action('menu:scan', async (ctx) => {
       await ctx.answerCbQuery().catch(() => {});
@@ -926,77 +1480,20 @@ export class TelegramBotService {
       await handleMenu(ctx);
     });
 
-    // 1-Click Buy Actions
+    // 1-Click Spot Buy & Sell Actions
     this.bot.action(/^buy:([A-Z0-9]+)$/i, async (ctx) => {
       try {
-        const symbol = ctx.match[1].toUpperCase();
-        const chatId = ctx.chat?.id?.toString() || '';
-
-        const creds = this.userManager.getBinanceCredentials(chatId);
-        if (!creds) {
-          await ctx.answerCbQuery('⚠️ Akun Binance belum terhubung.');
-          await ctx.reply(
-            `⚠️ <b>AKUN BINANCE BELUM TERHUBUNG</b>\n\n` +
-            `Untuk mengeksekusi pembelian 1-Click Spot untuk <b>${formatSymbolDisplay(symbol)}</b>, silakan hubungkan API Key Binance Anda terlebih dahulu.`,
-            {
-              parse_mode: 'HTML',
-              ...Markup.inlineKeyboard([
-                [Markup.button.callback('💼 Hubungkan Akun Sekarang', 'binance:login')]
-              ])
-            }
-          );
-          return;
-        }
-
-        if (!creds.canTrade) {
-          await ctx.answerCbQuery('⚠️ Izin trading tidak aktif di API Key Anda.');
-          await ctx.reply(
-            `⚠️ <b>IZIN TRADING TIDAK AKTIF</b>\n\n` +
-            `API Key Anda saat ini dalam mode <i>Read-Only</i>. Pastikan Anda mencentang opsi <b>Enable Spot &amp; Margin Trading</b> pada menu API Management di Binance.`,
-            { parse_mode: 'HTML' }
-          );
-          return;
-        }
-
-        await ctx.answerCbQuery();
-
-        let freeUsdt = 0;
-        try {
-          const accInfo = await this.tradingClient.getAccountBalances(creds.apiKey, creds.apiSecret);
-          const usdtItem = accInfo.balances.find(b => b.asset === 'USDT');
-          freeUsdt = usdtItem ? usdtItem.free : 0;
-        } catch {}
-
-        const text = `🛒 <b>PILIH NOMINAL BELI SPOT: ${formatSymbolDisplay(symbol)}</b>\n\n` +
-          `💵 Saldo USDT Tersedia: <b>$${freeUsdt.toFixed(2)} USDT</b>\n` +
-          `Pilih nominal USDT yang ingin dibelanjakan:`;
-
-        await ctx.reply(text, {
-          parse_mode: 'HTML',
-          ...Markup.inlineKeyboard([
-            [
-              Markup.button.callback('💵 10 USDT', `buy_amt:${symbol}:10`),
-              Markup.button.callback('💵 25 USDT', `buy_amt:${symbol}:25`)
-            ],
-            [
-              Markup.button.callback('💵 50 USDT', `buy_amt:${symbol}:50`),
-              Markup.button.callback('💵 100 USDT', `buy_amt:${symbol}:100`)
-            ],
-            [
-              Markup.button.callback('✏️ Nominal Kustom', `buy_amt:${symbol}:custom`),
-              Markup.button.callback('❌ Batal', 'buy:cancel')
-            ]
-          ])
-        });
+        await triggerBuyMenu(ctx, ctx.match[1]);
       } catch (err) {
         logger.error(`Error in buy action: ${(err as Error).message}`);
-        await ctx.answerCbQuery('❌ Gagal memproses order.').catch(() => {});
+        await ctx.answerCbQuery('❌ Gagal memproses order beli.').catch(() => {});
       }
     });
 
     this.bot.action(/^buy_amt:([A-Z0-9]+):([0-9.]+|custom)$/i, async (ctx) => {
       try {
-        const symbol = ctx.match[1].toUpperCase();
+        let symbol = ctx.match[1].toUpperCase();
+        if (!symbol.endsWith('USDT')) symbol = `${symbol}USDT`;
         const amtStr = ctx.match[2];
         const chatId = ctx.chat?.id?.toString() || '';
 
@@ -1017,36 +1514,7 @@ export class TelegramBotService {
         }
 
         const usdtAmount = parseFloat(amtStr);
-        if (isNaN(usdtAmount) || usdtAmount < 5) {
-          await ctx.reply('❌ Nominal pembelian minimal $5.00 USDT.');
-          return;
-        }
-
-        const creds = this.userManager.getBinanceCredentials(chatId);
-        if (!creds) return;
-
-        let currentPrice = 0;
-        let freeUsdt = 0;
-        try {
-          if (this.handlers) {
-            const scanRes = await this.handlers.onScanSymbol(symbol);
-            currentPrice = scanRes.entryPrice;
-          }
-          const accInfo = await this.tradingClient.getAccountBalances(creds.apiKey, creds.apiSecret);
-          const usdtItem = accInfo.balances.find(b => b.asset === 'USDT');
-          freeUsdt = usdtItem ? usdtItem.free : 0;
-        } catch {}
-
-        const confirmMsg = formatBuyConfirmMessage(symbol, usdtAmount, currentPrice, freeUsdt);
-        await ctx.reply(confirmMsg, {
-          parse_mode: 'HTML',
-          ...Markup.inlineKeyboard([
-            [
-              Markup.button.callback('✅ Ya, Eksekusi Beli', `buy_confirm:${symbol}:${usdtAmount}`),
-              Markup.button.callback('❌ Batalkan', 'buy:cancel')
-            ]
-          ])
-        });
+        await triggerBuyConfirm(ctx, symbol, usdtAmount);
       } catch (err) {
         logger.error(`Error in buy_amt action: ${(err as Error).message}`);
       }
@@ -1054,7 +1522,8 @@ export class TelegramBotService {
 
     this.bot.action(/^buy_confirm:([A-Z0-9]+):([0-9.]+)$/i, async (ctx) => {
       try {
-        const symbol = ctx.match[1].toUpperCase();
+        let symbol = ctx.match[1].toUpperCase();
+        if (!symbol.endsWith('USDT')) symbol = `${symbol}USDT`;
         const usdtAmount = parseFloat(ctx.match[2]);
         const chatId = ctx.chat?.id?.toString() || '';
 
@@ -1081,18 +1550,240 @@ export class TelegramBotService {
         await ctx.reply(receiptMsg, {
           parse_mode: 'HTML',
           ...Markup.inlineKeyboard([
-            [Markup.button.callback('🔔 Pasang Pantauan TP/SL (Notice Me)', `notice:${symbol}:15m`)]
+            [
+              Markup.button.callback('🔔 Pasang Pantauan TP/SL (Notice Me)', `notice:${symbol}:15m`),
+              Markup.button.callback('💰 Jual Spot Nanti', `sell:${symbol}`)
+            ]
           ])
         });
       } catch (err) {
         logger.error(`Error executing buy order: ${(err as Error).message}`);
-        await ctx.reply(`❌ <b>Eksekusi Order Gagal!</b>\n\nAlasan: ${escapeHtml((err as Error).message)}`, { parse_mode: 'HTML' });
+        await ctx.reply(`❌ <b>Eksekusi Order Beli Gagal!</b>\n\nAlasan: ${escapeHtml((err as Error).message)}`, { parse_mode: 'HTML' });
       }
     });
 
     this.bot.action('buy:cancel', async (ctx) => {
       await ctx.answerCbQuery('❌ Pembelian dibatalkan.').catch(() => {});
       await ctx.reply('❌ Pembelian spot telah dibatalkan.');
+    });
+
+    // 1-Click Spot Sell Actions
+    this.bot.action(/^sell:([A-Z0-9]+)$/i, async (ctx) => {
+      try {
+        await triggerSellMenu(ctx, ctx.match[1]);
+      } catch (err) {
+        logger.error(`Error in sell action: ${(err as Error).message}`);
+        await ctx.answerCbQuery('❌ Gagal memproses order jual.').catch(() => {});
+      }
+    });
+
+    this.bot.action(/^sell_pct:([A-Z0-9]+):([0-9]+)$/i, async (ctx) => {
+      try {
+        let symbol = ctx.match[1].toUpperCase();
+        if (!symbol.endsWith('USDT')) symbol = `${symbol}USDT`;
+        const pct = parseInt(ctx.match[2], 10);
+        await ctx.answerCbQuery().catch(() => {});
+        await triggerSellConfirm(ctx, symbol, `${pct}%`);
+      } catch (err) {
+        logger.error(`Error in sell_pct action: ${(err as Error).message}`);
+      }
+    });
+
+    this.bot.action(/^sell_amt:([A-Z0-9]+):(custom|[0-9.]+)$/i, async (ctx) => {
+      try {
+        let symbol = ctx.match[1].toUpperCase();
+        if (!symbol.endsWith('USDT')) symbol = `${symbol}USDT`;
+        const amtStr = ctx.match[2];
+        const chatId = ctx.chat?.id?.toString() || '';
+
+        await ctx.answerCbQuery().catch(() => {});
+
+        if (amtStr === 'custom') {
+          this.userSessionStates.set(chatId, {
+            step: 'AWAITING_CUSTOM_SELL_AMOUNT',
+            sellSymbol: symbol
+          });
+
+          const lotInfo = await this.tradingClient.getSymbolLotInfo(symbol);
+          const baseAsset = lotInfo.baseAsset;
+          const creds = this.userManager.getBinanceCredentials(chatId);
+          let freeBase = 0;
+          if (creds) {
+            try {
+              const accInfo = await this.tradingClient.getAccountBalances(creds.apiKey, creds.apiSecret);
+              const baseItem = accInfo.balances.find(b => b.asset.toUpperCase() === baseAsset.toUpperCase());
+              freeBase = baseItem ? baseItem.free : 0;
+            } catch {}
+          }
+
+          await ctx.reply(
+            `✏️ <b>Ketik jumlah ${baseAsset} yang ingin dijual:</b>\n\n` +
+            `🪙 Saldo tersedia: <b>${freeBase} ${baseAsset}</b>\n\n` +
+            `Contoh input:\n` +
+            `• Angka koin: <code>0.5</code> atau <code>1.25</code>\n` +
+            `• Persentase: <code>50%</code> atau <code>100%</code>\n\n` +
+            `💡 <i>Ketik /cancel untuk membatalkan.</i>`,
+            { parse_mode: 'HTML' }
+          );
+          return;
+        }
+
+        await triggerSellConfirm(ctx, symbol, amtStr);
+      } catch (err) {
+        logger.error(`Error in sell_amt action: ${(err as Error).message}`);
+      }
+    });
+
+    this.bot.action(/^sell_confirm:([A-Z0-9]+):([0-9.]+)$/i, async (ctx) => {
+      try {
+        let symbol = ctx.match[1].toUpperCase();
+        if (!symbol.endsWith('USDT')) symbol = `${symbol}USDT`;
+        const sellQtyStr = ctx.match[2];
+        const chatId = ctx.chat?.id?.toString() || '';
+
+        await ctx.answerCbQuery('⏳ Mengeksekusi order jual di Binance...').catch(() => {});
+
+        const creds = this.userManager.getBinanceCredentials(chatId);
+        if (!creds) {
+          await ctx.reply('❌ Kredensial Binance tidak ditemukan. Silakan hubungkan ulang via /connect.');
+          return;
+        }
+
+        const lotInfo = await this.tradingClient.getSymbolLotInfo(symbol);
+        const waitMsg = await ctx.reply(
+          `⏳ <i>Mengirim Market Sell Order ${sellQtyStr} ${lotInfo.baseAsset} ke Binance Spot...</i>`,
+          { parse_mode: 'HTML' }
+        );
+
+        const orderResult = await this.tradingClient.executeMarketSell(
+          creds.apiKey,
+          creds.apiSecret,
+          symbol,
+          sellQtyStr
+        );
+
+        await ctx.deleteMessage(waitMsg.message_id).catch(() => {});
+
+        const receiptMsg = formatOrderReceiptMessage(orderResult);
+        await ctx.reply(receiptMsg, {
+          parse_mode: 'HTML',
+          ...Markup.inlineKeyboard([
+            [
+              Markup.button.callback('💼 Cek Saldo Akun', 'binance:hub'),
+              Markup.button.callback('« Menu Utama', 'menu:main')
+            ]
+          ])
+        });
+      } catch (err) {
+        logger.error(`Error executing sell order: ${(err as Error).message}`);
+        await ctx.reply(`❌ <b>Eksekusi Order Jual Gagal!</b>\n\nAlasan: ${escapeHtml((err as Error).message)}`, { parse_mode: 'HTML' });
+      }
+    });
+
+    this.bot.action('sell:cancel', async (ctx) => {
+      await ctx.answerCbQuery('❌ Penjualan dibatalkan.').catch(() => {});
+      await ctx.reply('❌ Penjualan spot telah dibatalkan.');
+    });
+
+    this.bot.action('binance:sell_select', async (ctx) => {
+      try {
+        const chatId = ctx.chat?.id?.toString() || '';
+        const creds = this.userManager.getBinanceCredentials(chatId);
+
+        if (!creds) {
+          await ctx.answerCbQuery('⚠️ Akun Binance belum terhubung.');
+          return;
+        }
+
+        if (!creds.canTrade) {
+          await ctx.answerCbQuery('⚠️ Izin trading belum aktif.');
+          await ctx.reply(
+            `⚠️ <b>IZIN TRADING TIDAK AKTIF</b>\n\n` +
+            `API Key Anda saat ini dalam mode Read-Only. Aktifkan <b>Enable Spot &amp; Margin Trading</b> di Binance untuk dapat menjual aset.`,
+            { parse_mode: 'HTML' }
+          );
+          return;
+        }
+
+        await ctx.answerCbQuery().catch(() => {});
+
+        const waitMsg = await ctx.reply('⏳ <i>Memeriksa saldo koin yang dapat dijual...</i>', { parse_mode: 'HTML' });
+
+        const accInfo = await this.tradingClient.getAccountBalances(creds.apiKey, creds.apiSecret);
+        await ctx.deleteMessage(waitMsg.message_id).catch(() => {});
+
+        const stablecoins = new Set(['USDT', 'USDC', 'FDUSD', 'BUSD', 'DAI', 'TUSD']);
+        const sellableAssets = accInfo.balances.filter(b =>
+          !stablecoins.has(b.asset.toUpperCase()) &&
+          b.free > 0 &&
+          b.estimatedUsdt >= 4.5
+        );
+
+        if (sellableAssets.length === 0) {
+          const smallAssets = accInfo.balances.filter(b =>
+            !stablecoins.has(b.asset.toUpperCase()) &&
+            b.free > 0 &&
+            b.estimatedUsdt < 4.5 &&
+            b.estimatedUsdt > 0.1
+          );
+
+          if (smallAssets.length > 0) {
+            await ctx.reply(
+              `⚠️ <b>TIDAK ADA ASET YANG MEMENUHI MINIMUM ORDER</b>\n\n` +
+              `Anda memiliki aset koin di Spot Wallet, namun nilainya di bawah minimum order Binance ($5.00 USDT):\n` +
+              smallAssets.map(a => `• <b>${a.asset}:</b> ${a.free} (~$${a.estimatedUsdt.toFixed(2)})`).join('\n') +
+              `\n\n💡 <i>Gunakan fitur <b>Convert Small Balances to BNB</b> langsung di aplikasi Binance untuk menukar saldo kecil (dust).</i>`,
+              {
+                parse_mode: 'HTML',
+                ...Markup.inlineKeyboard([
+                  [Markup.button.callback('« Kembali ke Akun Binance', 'binance:hub')]
+                ])
+              }
+            );
+          } else {
+            await ctx.reply(
+              `ℹ️ <b>TIDAK ADA ASET SPOT UNTUK DIJUAL</b>\n\n` +
+              `Spot Wallet Anda saat ini tidak memiliki saldo koin kripto selain stablecoin USDT/USDC.`,
+              {
+                parse_mode: 'HTML',
+                ...Markup.inlineKeyboard([
+                  [Markup.button.callback('« Kembali ke Akun Binance', 'binance:hub')]
+                ])
+              }
+            );
+          }
+          return;
+        }
+
+        const msgText = formatPortfolioSellSelectMessage(sellableAssets);
+
+        const buttons: any[] = [];
+        let currentRow: any[] = [];
+
+        for (const item of sellableAssets) {
+          const sym = `${item.asset}USDT`;
+          currentRow.push(
+            Markup.button.callback(`💰 Jual ${item.asset} ($${item.estimatedUsdt.toFixed(1)})`, `sell:${sym}`)
+          );
+          if (currentRow.length === 2) {
+            buttons.push(currentRow);
+            currentRow = [];
+          }
+        }
+        if (currentRow.length > 0) {
+          buttons.push(currentRow);
+        }
+
+        buttons.push([Markup.button.callback('« Kembali ke Akun Binance', 'binance:hub')]);
+
+        await ctx.reply(msgText, {
+          parse_mode: 'HTML',
+          ...Markup.inlineKeyboard(buttons)
+        });
+      } catch (err) {
+        logger.error(`Error in binance:sell_select: ${(err as Error).message}`);
+        await ctx.reply(`❌ Gagal mengambil daftar aset: ${escapeHtml((err as Error).message)}`);
+      }
     });
 
     // 4. Admin Menu & User Management Callbacks
@@ -1578,63 +2269,42 @@ export class TelegramBotService {
 
           const cleanedAmount = rawText.replace(/[^0-9.]/g, '');
           const usdtAmount = parseFloat(cleanedAmount);
+          await triggerBuyConfirm(ctx, buySymbol, usdtAmount);
+          return;
+        }
 
-          if (isNaN(usdtAmount) || usdtAmount < 5) {
-            await ctx.reply('❌ Nominal tidak valid atau kurang dari minimal $5.00 USDT. Pembelian dibatalkan.');
-            return;
-          }
+        if (session.step === 'AWAITING_CUSTOM_SELL_AMOUNT' && session.sellSymbol) {
+          const sellSymbol = session.sellSymbol;
+          this.userSessionStates.delete(chatId);
 
-          const creds = this.userManager.getBinanceCredentials(chatId);
-          if (!creds) {
-            await ctx.reply('❌ Akun Binance belum terhubung.');
-            return;
-          }
-
-          let currentPrice = 0;
-          let freeUsdt = 0;
-          try {
-            if (this.handlers) {
-              const scanRes = await this.handlers.onScanSymbol(buySymbol);
-              currentPrice = scanRes.entryPrice;
-            }
-            const accInfo = await this.tradingClient.getAccountBalances(creds.apiKey, creds.apiSecret);
-            const usdtItem = accInfo.balances.find(b => b.asset === 'USDT');
-            freeUsdt = usdtItem ? usdtItem.free : 0;
-          } catch {}
-
-          const confirmMsg = formatBuyConfirmMessage(buySymbol, usdtAmount, currentPrice, freeUsdt);
-          await ctx.reply(confirmMsg, {
-            parse_mode: 'HTML',
-            ...Markup.inlineKeyboard([
-              [
-                Markup.button.callback('✅ Ya, Eksekusi Beli', `buy_confirm:${buySymbol}:${usdtAmount}`),
-                Markup.button.callback('❌ Batalkan', 'buy:cancel')
-              ]
-            ])
-          });
+          await triggerSellConfirm(ctx, sellSymbol, rawText.trim());
           return;
         }
       }
 
       // Check persistent Reply Keyboard button presses:
-      if (/^🔍.*(screener|find)/i.test(rawText) || rawText === '🔍 Screener (/find)') {
+      if (/^🔍.*(screener|find)/i.test(rawText) || rawText === '🔍 Screener' || rawText === '🔍 Screener (/find)') {
         await handleScreener(ctx);
         return;
       }
-      if (/^⚡.*scalp/i.test(rawText) || rawText === '⚡ Scalp Radar (/scalp)') {
+      if (/^⚡.*scalp/i.test(rawText) || rawText === '⚡ Scalp Radar' || rawText === '⚡ Scalp Radar (/scalp)') {
         await handleScalp(ctx);
         return;
       }
-      if (/^🎯.*(daily|entry)/i.test(rawText) || rawText === '🎯 Daily Entry (/daily)') {
+      if (/^🎯.*(daily|entry)/i.test(rawText) || rawText === '🎯 Daily Entry' || rawText === '🎯 Daily Entry (/daily)') {
         await handleDaily(ctx);
         return;
       }
-      if (/^📋.*watcher/i.test(rawText) || rawText === '📋 Watchers (/watchers)') {
+      if (/^📋.*watcher/i.test(rawText) || rawText === '📋 Watchers' || rawText === '📋 Watchers (/watchers)') {
         await handleWatchers(ctx);
         return;
       }
       if (/^💼.*(binance|akun)/i.test(rawText) || rawText === '💼 Akun Binance' || rawText === '💼 Binance Account') {
         await handleBinanceHub(ctx);
+        return;
+      }
+      if (/^📈.*(pnl|profit|rekap|histori|performa)/i.test(rawText) || rawText === '📈 Rekap PnL') {
+        await handlePnl(ctx);
         return;
       }
       if (/^💰.*(balance|saldo)/i.test(rawText) || rawText === '💰 Saldo Binance (/balance)') {
@@ -1645,15 +2315,15 @@ export class TelegramBotService {
         await handleBinanceHub(ctx);
         return;
       }
-      if (/^📊.*scan/i.test(rawText) || rawText === '📊 Scan Watchlist (/scan)') {
+      if (/^📊.*scan/i.test(rawText) || rawText === '📊 Scan Watchlist' || rawText === '📊 Scan Watchlist (/scan)') {
         await handleScan(ctx);
         return;
       }
-      if (/^ℹ️.*(help|status)/i.test(rawText) || rawText === 'ℹ️ Help & Status (/help)') {
+      if (/^ℹ️.*(help|status)/i.test(rawText) || rawText === 'ℹ️ Help & Status' || rawText === 'ℹ️ Help & Status (/help)') {
         await handleHelp(ctx);
         return;
       }
-      if (/^👑.*admin/i.test(rawText) || rawText === '👑 Admin Menu (/admin)') {
+      if (/^👑.*admin/i.test(rawText) || rawText === '👑 Admin Menu' || rawText === '👑 Admin Menu (/admin)') {
         await handleAdminMenu(ctx);
         return;
       }
@@ -1666,6 +2336,12 @@ export class TelegramBotService {
       const rawCmd = parts[0].toLowerCase().split('@')[0]; // handle @bot_username
       const tf = parts[1];
 
+      // Direct routing for PnL commands:
+      if (['pnl', 'profit', 'rekap', 'history'].includes(rawCmd)) {
+        await handlePnl(ctx);
+        return;
+      }
+
       // Direct routing for Binance Hub commands (prevents false ticker matching):
       if (['binance', 'account', 'connect', 'balance', 'portfolio', 'saldo'].includes(rawCmd)) {
         await handleBinanceHub(ctx);
@@ -1673,6 +2349,14 @@ export class TelegramBotService {
       }
       if (['disconnect', 'logout'].includes(rawCmd)) {
         await handleDisconnect(ctx);
+        return;
+      }
+      if (['buy', 'beli'].includes(rawCmd)) {
+        await handleBuyCommand(ctx);
+        return;
+      }
+      if (['sell', 'jual'].includes(rawCmd)) {
+        await handleSellCommand(ctx);
         return;
       }
 
@@ -1723,8 +2407,11 @@ export class TelegramBotService {
           { command: 'find', description: '🔍 Screener 30 pair teraktif di Binance' },
           { command: 'scalp', description: '⚡ Scalping radar momentum (15m/30m)' },
           { command: 'daily', description: '🎯 Rekomendasi entry trading harian (1h)' },
-          { command: 'binance', description: '💼 Akun Binance, portofolio & 1-Click Buy' },
+          { command: 'binance', description: '💼 Akun Binance, portofolio & Beli/Jual Spot' },
+          { command: 'buy', description: '🛒 Beli spot koin langsung di Binance (/buy SOL)' },
+          { command: 'sell', description: '💰 Jual spot koin langsung di Binance (/sell SOL)' },
           { command: 'watchers', description: '📋 Pantauan live trade aktif (TP/SL)' },
+          { command: 'pnl', description: '📈 Rekap performa & histori PnL Watchers' },
           { command: 'scan', description: '📊 Scan watchlist pair' },
           { command: 'status', description: '⚙️ Status operasional & scanner bot' },
           { command: 'admin', description: '👑 Menu admin & kelola user (khusus admin)' },
@@ -1779,8 +2466,11 @@ export class TelegramBotService {
     const message = formatBuySignalMessage(result);
     const inlineKeyboard = Markup.inlineKeyboard([
       [
-        Markup.button.callback('🔔 Notice Me (Pantau)', `notice:${result.symbol}:${result.timeframe}`),
-        Markup.button.callback('🛒 Beli Spot', `buy:${result.symbol}`)
+        Markup.button.callback('🔔 Notice Me (Pantau)', `notice:${result.symbol}:${result.timeframe}`)
+      ],
+      [
+        Markup.button.callback('🛒 Beli Spot', `buy:${result.symbol}`),
+        Markup.button.callback('💰 Jual Spot', `sell:${result.symbol}`)
       ]
     ]);
 
