@@ -100,7 +100,7 @@ export class TelegramBotService {
     this.config = config;
     this.bot = new Telegraf(config.telegram.token);
     this.userManager = userManager || new UserManager(config.telegram.adminChatId);
-    this.tradingClient = new BinanceTradingClient(config.exchange.baseUrl);
+    this.tradingClient = new BinanceTradingClient(config.exchange.baseUrl, config.exchange.fallbackBaseUrl);
   }
 
   /**
@@ -854,6 +854,7 @@ export class TelegramBotService {
     });
 
     this.bot.action('binance:refresh', async (ctx) => {
+      this.tradingClient.clearPriceCache();
       await ctx.answerCbQuery('Memperbarui saldo...').catch(() => {});
       await handleBinanceHub(ctx, true);
     });
