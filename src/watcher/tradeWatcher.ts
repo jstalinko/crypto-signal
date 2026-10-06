@@ -38,7 +38,7 @@ export class TradeWatcherService {
 
   constructor(
     exchange: ExchangeClient,
-    checkIntervalSeconds: number = 30,
+    checkIntervalSeconds: number = 15,
     storagePath: string = path.resolve(process.cwd(), 'data', 'watchers.json')
   ) {
     this.exchange = exchange;
@@ -70,7 +70,7 @@ export class TradeWatcherService {
     // Run first check after a brief startup delay
     setTimeout(() => {
       this.checkWatchers().catch(() => {});
-    }, 3000);
+    }, 1000);
   }
 
   /**
@@ -196,7 +196,16 @@ export class TradeWatcherService {
    * Main checking loop: fetches live prices and evaluates TP/SL triggers
    */
   public async checkWatchers(): Promise<void> {
-    if (this.isChecking) return;
+    if (this.isChecking) {
+      // If a check is already underway, wait briefly up to 2 seconds for it to finish
+      let waited = 0;
+      while (this.isChecking && waited < 2000) {
+        await new Promise(r => setTimeout(r, 100));
+        waited += 100;
+      }
+      if (this.isChecking) return;
+    }
+
     const active = this.getActiveWatchers();
     if (active.length === 0) return;
 
@@ -230,15 +239,30 @@ export class TradeWatcherService {
     const pairDisplay = formatSymbolDisplay(trade.symbol);
     const entry = trade.entryPrice;
 
-    // 1. Check Stop Loss trigger (Price drops to or below Stop Loss)
+    // 1. Check Stop Loss / BEP trigger (Price drops to or below Stop Loss)
     if (currentPrice <= trade.stopLoss) {
       trade.status = 'STOPPED';
       trade.slHit = true;
       const actualLossPct = ((entry - currentPrice) / entry * 100).toFixed(2);
+      const isBep = trade.tp1Hit;
 
-      logger.warn(`STOP LOSS HIT for ${trade.symbol}: Current=${currentPrice}, SL=${trade.stopLoss}`);
+      logger.warn(`${isBep ? 'BEP PROTECT' : 'STOP LOSS'} HIT for ${trade.symbol}: Current=${currentPrice}, SL=${trade.stopLoss}`);
 
-      const message = `🛑 <b>STOP LOSS TERSENTUH!</b>
+      const message = isBep
+        ? `🛡 <b>BREAK-EVEN PROTECT (BEP) TERSENTUH!</b> 🛡
+
+Pair: <b>${pairDisplay}</b>
+Timeframe: <b>${trade.timeframe}</b>
+
+💰 Harga Entry: <b>${formatPrice(trade.entryPrice)}</b>
+🛡 Level BEP: <b>${formatPrice(trade.stopLoss)}</b>
+📉 Harga Saat Ini: <b>${formatPrice(currentPrice)}</b>
+
+🎉 <b>Hasil Trade:</b>
+Profit 50% telah diamankan saat TP1, dan sisa posisi keluar di titik impas tanpa risiko kerugian sama sekali!
+
+<i>Status pemantauan untuk ${pairDisplay} telah selesai.</i>`
+        : `🛑 <b>STOP LOSS TERSENTUH!</b>
 
 Pair: <b>${pairDisplay}</b>
 Timeframe: <b>${trade.timeframe}</b>
@@ -291,6 +315,8 @@ Target profit maksimal telah tercapai sempurna! Tutup sisa posisi dan amankan se
     if (!trade.tp1Hit && currentPrice >= trade.takeProfit1) {
       trade.status = 'TP1_HIT';
       trade.tp1Hit = true;
+      // Auto move SL to BEP (Entry Price) to protect the position!
+      trade.stopLoss = Math.max(trade.stopLoss, trade.entryPrice);
       const actualProfitPct = ((currentPrice - entry) / entry * 100).toFixed(2);
 
       logger.info(`TAKE PROFIT 1 HIT for ${trade.symbol}: Current=${currentPrice}, TP1=${trade.takeProfit1}`);
@@ -307,7 +333,7 @@ Timeframe: <b>${trade.timeframe}</b>
 
 💡 <b>Rekomendasi Manajemen Posisi:</b>
 1. Amankan 50% profit Anda sekarang.
-2. Geser Stop Loss ke titik impas (BEP): <b>${formatPrice(trade.entryPrice)}</b> agar posisi sekarang 100% Risk-Free!
+2. Stop Loss telah digeser otomatis ke titik impas (BEP): <b>${formatPrice(trade.entryPrice)}</b> agar sisa posisi 100% Risk-Free!
 
 🤖 <i>Bot otomatis terus memantau menuju target TP2...</i>`;
 

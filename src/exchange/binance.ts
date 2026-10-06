@@ -181,6 +181,17 @@ export class BinanceClient implements ExchangeClient {
     const priceMap = new Map<string, number>();
     if (!symbols || symbols.length === 0) return priceMap;
 
+    if (symbols.length === 1) {
+      const sym = symbols[0].toUpperCase();
+      try {
+        const p = await this.getPrice(sym);
+        priceMap.set(sym, p);
+        return priceMap;
+      } catch (err) {
+        logger.warn(`Single ticker price fetch failed for ${sym}: ${(err as Error).message}. Falling back to batch request.`);
+      }
+    }
+
     const endpoint = '/api/v3/ticker/price';
     const params = {
       symbols: JSON.stringify(symbols.map(s => s.toUpperCase()))

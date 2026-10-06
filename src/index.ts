@@ -26,7 +26,7 @@ async function main(): Promise<void> {
 
   // 3. Initialize Telegram Bot Service & Trade Watcher
   const botService = new TelegramBotService(config);
-  const watcherService = new TradeWatcherService(exchange, 30);
+  const watcherService = new TradeWatcherService(exchange, 15);
   const userStats = botService.getUserManager().getStats();
   logger.info(`Admin Chat ID: ${config.telegram.adminChatId}`);
   logger.info(`User database: ${userStats.total} total (${userStats.approved} approved, ${userStats.pending} pending)`);
@@ -50,20 +50,7 @@ async function main(): Promise<void> {
     getStatusInfo: () => scanner.getStatusInfo()
   });
 
-  // 6. Launch Telegram Bot
-  try {
-    await botService.launch();
-    logger.info('Telegram bot started successfully');
-  } catch (err) {
-    logger.error(`Failed to start Telegram bot: ${(err as Error).message}`);
-    process.exit(1);
-  }
-
-  // 7. Start Market Scanner & Trade Watcher loop
-  scanner.start();
-  watcherService.start();
-
-  // 8. Graceful Shutdown Handlers
+  // 6. Graceful Shutdown Handlers
   const shutdown = (signal: string) => {
     logger.info(`Received ${signal}. Shutting down gracefully...`);
     watcherService.stop();
@@ -74,6 +61,19 @@ async function main(): Promise<void> {
 
   process.once('SIGINT', () => shutdown('SIGINT'));
   process.once('SIGTERM', () => shutdown('SIGTERM'));
+
+  // 7. Start Market Scanner & Trade Watcher background services
+  scanner.start();
+  watcherService.start();
+
+  // 8. Launch Telegram Bot
+  try {
+    await botService.launch();
+    logger.info('Telegram bot started successfully');
+  } catch (err) {
+    logger.error(`Failed to start Telegram bot: ${(err as Error).message}`);
+    process.exit(1);
+  }
 }
 
 main().catch(err => {

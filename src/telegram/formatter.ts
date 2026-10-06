@@ -404,6 +404,7 @@ export function formatWatchersListMessage(watchers: Array<{
   takeProfit2: number;
   status: string;
   lastCheckedPrice?: number;
+  lastCheckedAt?: number;
 }>): string {
   if (watchers.length === 0) {
     return `📋 <b>DAFTAR PANTAUAN AKTIF (TRADE WATCHERS)</b>
@@ -425,19 +426,54 @@ Ketik analisa koin apa saja (contoh: /near, /sui, /sol) atau /scalp, lalu klik t
     const pnlEmoji = pnlPct >= 0 ? '🟢' : '🔴';
     const statusBadge = trade.status === 'TP1_HIT' ? '🎯 TP1 HIT (BEP)' : '⚡ RUNNING';
 
-    const distTp1 = ((trade.takeProfit1 - currPrice) / currPrice * 100).toFixed(2);
-    const distTp2 = ((trade.takeProfit2 - currPrice) / currPrice * 100).toFixed(2);
-    const distSl = ((currPrice - trade.stopLoss) / currPrice * 100).toFixed(2);
+    let tp1Text = '';
+    if (currPrice >= trade.takeProfit1) {
+      tp1Text = `🎯 TP1: ${formatPrice(trade.takeProfit1)} (✅ TERCAPAI)`;
+    } else {
+      const distTp1 = ((trade.takeProfit1 - currPrice) / currPrice * 100).toFixed(2);
+      tp1Text = `🎯 TP1: ${formatPrice(trade.takeProfit1)} (sisa +${distTp1}%)`;
+    }
+
+    let tp2Text = '';
+    if (currPrice >= trade.takeProfit2) {
+      tp2Text = `🎯 TP2: ${formatPrice(trade.takeProfit2)} (✅ TERCAPAI)`;
+    } else {
+      const distTp2 = ((trade.takeProfit2 - currPrice) / currPrice * 100).toFixed(2);
+      tp2Text = `🎯 TP2: ${formatPrice(trade.takeProfit2)} (sisa +${distTp2}%)`;
+    }
+
+    let slText = '';
+    if (currPrice <= trade.stopLoss) {
+      slText = `🛑 SL: ${formatPrice(trade.stopLoss)} (🛑 TERSENTUH)`;
+    } else {
+      const distSl = ((currPrice - trade.stopLoss) / currPrice * 100).toFixed(2);
+      if (trade.status === 'TP1_HIT') {
+        slText = `🛑 SL: ${formatPrice(trade.stopLoss)} (🛡 BEP Risk-Free | jarak -${distSl}%)`;
+      } else {
+        slText = `🛑 SL: ${formatPrice(trade.stopLoss)} (jarak -${distSl}%)`;
+      }
+    }
+
+    let liveTag = '';
+    if (trade.lastCheckedAt) {
+      const secAgo = Math.max(0, Math.floor((Date.now() - trade.lastCheckedAt) / 1000));
+      if (secAgo < 60) {
+        liveTag = ` • <i>live (${secAgo}s lalu)</i>`;
+      } else {
+        const minAgo = Math.floor(secAgo / 60);
+        liveTag = ` • <i>live (${minAgo}m lalu)</i>`;
+      }
+    }
 
     msg += `<b>${i + 1}. ${pair}</b> (${trade.timeframe}) — [${statusBadge}]\n`;
-    msg += `💰 Entry: ${formatPrice(trade.entryPrice)} | Saat Ini: <b>${formatPrice(currPrice)}</b> (${pnlEmoji} ${pnlSign}${pnlPct.toFixed(2)}%)\n`;
-    msg += `🎯 TP1: ${formatPrice(trade.takeProfit1)} (sisa +${distTp1}%)\n`;
-    msg += `🎯 TP2: ${formatPrice(trade.takeProfit2)} (sisa +${distTp2}%)\n`;
-    msg += `🛑 SL: ${formatPrice(trade.stopLoss)} (jarak -${distSl}%)\n`;
+    msg += `💰 Entry: ${formatPrice(trade.entryPrice)} | Saat Ini: <b>${formatPrice(currPrice)}</b> (${pnlEmoji} ${pnlSign}${pnlPct.toFixed(2)}%${liveTag})\n`;
+    msg += `${tp1Text}\n`;
+    msg += `${tp2Text}\n`;
+    msg += `${slText}\n`;
     msg += `👉 Hentikan: /unwatch_${trade.symbol.toLowerCase().replace('usdt', '')}\n\n`;
   }
 
-  msg += `💡 <i>Bot terus memantau harga secara live dan akan mengirim notifikasi saat target tercapai.</i>`;
+  msg += `💡 <i>Bot terus memantau harga secara live (update tiap 15 detik) dan akan mengirim notifikasi saat target tercapai.</i>`;
   return msg.trim();
 }
 

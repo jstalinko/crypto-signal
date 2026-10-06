@@ -422,6 +422,9 @@ export class TelegramBotService {
         const parts = ctx.message?.text?.trim().split(/\s+/) || [];
         const showAll = isAdmin && parts[1]?.toLowerCase() === 'all';
 
+        // Refresh live prices from exchange immediately so user gets 100% fresh data
+        await this.watcherService.checkWatchers();
+
         const active = this.watcherService.getActiveWatchers(showAll ? undefined : chatId);
         const text = formatWatchersListMessage(active);
         await this.replySafe(ctx, text, this.getMainReplyKeyboard(isAdmin));
@@ -620,6 +623,11 @@ export class TelegramBotService {
             [Markup.button.callback('❌ Hentikan Pantauan', `unwatch:${symbol}`)]
           ])
         });
+
+        // Trigger immediate live price check in background
+        setTimeout(() => {
+          this.watcherService?.checkWatchers().catch(() => {});
+        }, 500);
       } catch (err) {
         logger.error(`Error in Notice Me action: ${(err as Error).message}`);
         await ctx.answerCbQuery('❌ Gagal mengaktifkan Notice Me.').catch(() => {});
@@ -1166,7 +1174,12 @@ export class TelegramBotService {
         logger.warn(`Could not set Telegram commands: ${(cmdErr as Error).message}`);
       }
 
-      await this.bot.launch();
+      // Start long-polling asynchronously without awaiting the infinite loop.
+      // In Telegraf, bot.launch() only resolves when polling terminates.
+      this.bot.launch({ dropPendingUpdates: true }).catch(err => {
+        logger.error(`Telegram bot polling terminated: ${(err as Error).message}`);
+        this.isRunning = false;
+      });
       this.isRunning = true;
       logger.info('Telegram bot polling started');
     } catch (err) {
