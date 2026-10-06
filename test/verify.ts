@@ -298,6 +298,153 @@ async function runTests() {
 
   console.log('✅ Daily Trading Scanner, Formatters & Keyboards OK.\n');
 
+  // Test 11: UserManager, Public Bot Approval Flow & Multi-user Watchers
+  console.log('Test 11: Testing UserManager, Admin Menus & Multi-user Watchers...');
+  const { UserManager } = await import('../src/user/userManager.js');
+  const testUsersFile = path.resolve(process.cwd(), 'data', 'test_users.json');
+  if (fs.existsSync(testUsersFile)) {
+    fs.unlinkSync(testUsersFile);
+  }
+
+  const userMgr = new UserManager('7472742743', testUsersFile);
+
+  // 11.1 Check Admin auto-creation
+  if (!userMgr.isAdmin('7472742743')) {
+    throw new Error('Configured adminChatId was not recognized as admin');
+  }
+  if (!userMgr.isApproved('7472742743')) {
+    throw new Error('Admin should automatically be approved');
+  }
+
+  // 11.2 Register new public user
+  const regResult = userMgr.registerOrUpdate('111222333', {
+    username: 'crypto_trader',
+    firstName: 'Alice',
+    lastName: 'Trader'
+  });
+  if (!regResult.isNew) {
+    throw new Error('Expected new user registration to have isNew: true');
+  }
+  if (regResult.user.status !== 'pending') {
+    throw new Error(`Expected status pending, got ${regResult.user.status}`);
+  }
+  if (userMgr.isApproved('111222333')) {
+    throw new Error('Pending user should not be approved');
+  }
+
+  // 11.3 Approve user
+  const approvedUser = userMgr.approveUser('111222333');
+  if (!approvedUser || approvedUser.status !== 'approved' || !userMgr.isApproved('111222333')) {
+    throw new Error('User approval failed');
+  }
+
+  // 11.4 Register second user and reject
+  userMgr.registerOrUpdate('444555666', {
+    username: 'spammer_bot',
+    firstName: 'Bob'
+  });
+  const rejectedUser = userMgr.rejectUser('444555666');
+  if (!rejectedUser || rejectedUser.status !== 'rejected') {
+    throw new Error('User rejection failed');
+  }
+
+  // 11.5 Check stats
+  const stats = userMgr.getStats();
+  console.log('User Manager stats:', stats);
+  if (stats.total !== 3 || stats.approved !== 2 || stats.rejected !== 1) {
+    throw new Error(`Unexpected user stats: ${JSON.stringify(stats)}`);
+  }
+
+  // 11.6 Test formatters for Admin
+  const {
+    formatAdminDashboard,
+    formatAdminUsersList,
+    formatAdminUserDetail,
+    formatNewUserRequestMessage,
+    formatWaitingApprovalMessage,
+    formatUserApprovedNotification,
+    formatUserRejectedNotification
+  } = await import('../src/telegram/formatter.js');
+
+  const adminDashboardMsg = formatAdminDashboard(stats);
+  validateTelegramHtml(adminDashboardMsg, 'AdminDashboard');
+
+  const adminUsersMsg = formatAdminUsersList(userMgr.getAllUsers());
+  validateTelegramHtml(adminUsersMsg, 'AdminUsersList');
+
+  const userDetailMsg = formatAdminUserDetail(approvedUser);
+  validateTelegramHtml(userDetailMsg, 'AdminUserDetail');
+
+  const newReqMsg = formatNewUserRequestMessage(regResult.user);
+  validateTelegramHtml(newReqMsg, 'NewUserRequest');
+
+  const waitMsg = formatWaitingApprovalMessage(regResult.user);
+  validateTelegramHtml(waitMsg, 'WaitingApproval');
+
+  const userApprMsg = formatUserApprovedNotification();
+  validateTelegramHtml(userApprMsg, 'UserApprovedNotice');
+
+  const userRejMsg = formatUserRejectedNotification();
+  validateTelegramHtml(userRejMsg, 'UserRejectedNotice');
+
+  console.log('✅ Admin dashboard, user management formatters & HTML validated.');
+
+  // 11.7 Multi-user Watchers Isolation
+  const multiWatcherStorage = path.resolve(process.cwd(), 'data', 'test_multi_watchers.json');
+  if (fs.existsSync(multiWatcherStorage)) fs.unlinkSync(multiWatcherStorage);
+
+  const multiWatcher = new TradeWatcherService(client, 30, multiWatcherStorage);
+  // User 1 watches BTC
+  multiWatcher.addWatcher({
+    symbol: 'BTCUSDT',
+    chatId: '111222333',
+    timeframe: '15m',
+    entryPrice: 65000,
+    stopLoss: 63000,
+    takeProfit1: 67000,
+    takeProfit2: 69000
+  });
+
+  // User 2 watches BTC with different prices
+  multiWatcher.addWatcher({
+    symbol: 'BTCUSDT',
+    chatId: '7472742743',
+    timeframe: '15m',
+    entryPrice: 66000,
+    stopLoss: 64000,
+    takeProfit1: 68000,
+    takeProfit2: 70000
+  });
+
+  const user1Watchers = multiWatcher.getActiveWatchers('111222333');
+  const adminWatchers = multiWatcher.getActiveWatchers('7472742743');
+  const allActiveWatchers = multiWatcher.getActiveWatchers();
+
+  if (user1Watchers.length !== 1 || user1Watchers[0].entryPrice !== 65000) {
+    throw new Error('User 1 watchers isolation failed');
+  }
+  if (adminWatchers.length !== 1 || adminWatchers[0].entryPrice !== 66000) {
+    throw new Error('Admin watchers isolation failed');
+  }
+  if (allActiveWatchers.length !== 2) {
+    throw new Error(`Expected 2 total active watchers, got ${allActiveWatchers.length}`);
+  }
+
+  // Remove User 1's watcher
+  multiWatcher.removeWatcher('BTCUSDT', '111222333');
+  if (multiWatcher.getActiveWatchers('111222333').length !== 0) {
+    throw new Error('User 1 watcher was not removed');
+  }
+  if (multiWatcher.getActiveWatchers('7472742743').length !== 1) {
+    throw new Error('Admin watcher was erroneously removed when removing User 1 watcher');
+  }
+
+  // Cleanup test files
+  if (fs.existsSync(testUsersFile)) fs.unlinkSync(testUsersFile);
+  if (fs.existsSync(multiWatcherStorage)) fs.unlinkSync(multiWatcherStorage);
+
+  console.log('✅ Multi-user Watchers Isolation verified.\n');
+
   console.log('🎉 ALL TESTS PASSED SUCCESSFULLY!');
 }
 

@@ -4,7 +4,8 @@ import { logger } from './utils/logger.js';
 
 export interface TelegramConfig {
   token: string;
-  chatId: string;
+  adminChatId: string;
+  chatId?: string;
   cooldownMinutes?: number;
 }
 
@@ -80,11 +81,25 @@ export function loadConfig(configPath?: string): AppConfig {
     process.exit(1);
   }
 
-  if (!parsed.telegram.chatId || parsed.telegram.chatId.trim() === '' || parsed.telegram.chatId === 'YOUR_CHAT_ID') {
-    logger.error('Telegram chatId is missing or placeholder in config.json');
-    logger.error('Please configure a valid telegram.chatId in config.json');
+  const adminChatIdRaw =
+    (parsed.telegram as any)?.chat_id_admin ||
+    (parsed.telegram as any)?.adminChatId ||
+    (parsed.telegram as any)?.chatIdAdmin ||
+    parsed.telegram?.chatId;
+
+  if (
+    !adminChatIdRaw ||
+    typeof adminChatIdRaw !== 'string' ||
+    adminChatIdRaw.trim() === '' ||
+    adminChatIdRaw === 'YOUR_CHAT_ID' ||
+    adminChatIdRaw === 'YOUR_ADMIN_CHAT_ID'
+  ) {
+    logger.error('Telegram chat_id_admin is missing or placeholder in config.json');
+    logger.error('Please configure a valid telegram.chat_id_admin in config.json');
     process.exit(1);
   }
+
+  const adminChatId = adminChatIdRaw.trim();
 
   // Validate Exchange Config
   const exchangeBaseUrl = parsed.exchange?.baseUrl?.trim() || 'https://api.binance.com';
@@ -130,7 +145,8 @@ export function loadConfig(configPath?: string): AppConfig {
   const config: AppConfig = {
     telegram: {
       token: parsed.telegram.token.trim(),
-      chatId: parsed.telegram.chatId.trim(),
+      adminChatId,
+      chatId: adminChatId,
       cooldownMinutes
     },
     exchange: {

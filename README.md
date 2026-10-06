@@ -31,8 +31,10 @@ Bot sinyal trading spot cryptocurrency otomatis berbasis **Node.js**, **TypeScri
 - **Resilient Connectivity**: Otomatis fallback bila koneksi utama terhambat sensor ISP (misal DNS blocking Telkomsel ke `data-api.binance.vision`).
 - **Scoring System (0–100)**: Evaluasi multi-faktor dari EMA trend, RSI, MACD, Volume ratio, dan Price Breakout.
 - **False Positive Filter**: Mengharuskan konfirmasi minimum (EMA20 > EMA50, Harga > EMA20, MACD bullish) sebelum menghasilkan status `BUY`.
-- **Anti-Spam & Cooldown**: Mencegah pengiriman sinyal berulang ke Telegram jika state masih sama dalam rentang cooldown (`cooldownMinutes`).
-- **Chat ID Security**: Membatasi penggunaan perintah Telegram bot hanya untuk Chat ID yang diizinkan di `config.json`.
+- **Public Bot with Admin Approval**: Siapapun dapat memulai chat dengan bot, pengguna baru otomatis masuk antrean persetujuan admin.
+- **Admin Dashboard & Controls**: Menu khusus admin (`/admin`) untuk melihat pengguna, menyetujui (`/approve`), menolak (`/reject`), dan broadcast pesan (`/broadcast`).
+- **File-Based JSON User Database**: Data pengguna disimpan persisten di `data/users.json`.
+- **Multi-User Isolation**: Pemantauan trade ("Notice Me") terisolasi per akun pengguna, dan sinyal otomatis di-broadcast ke seluruh pengguna yang telah disetujui.
 - **Token Masking**: Token bot tidak akan pernah bocor ke log console.
 
 ---
@@ -72,7 +74,7 @@ Buka dan sesuaikan nilai di `config.json`:
 {
   "telegram": {
     "token": "YOUR_TELEGRAM_BOT_TOKEN",
-    "chatId": "YOUR_CHAT_ID",
+    "chat_id_admin": "YOUR_ADMIN_CHAT_ID",
     "cooldownMinutes": 30
   },
   "exchange": {
@@ -123,15 +125,23 @@ Buka dan sesuaikan nilai di `config.json`:
 
 ---
 
-## 🆔 Cara Mendapatkan Telegram Chat ID
+## 🆔 Cara Mendapatkan Telegram Admin Chat ID (`chat_id_admin`)
 
 1. Cari bot **[@userinfobot](https://t.me/userinfobot)** atau **[@RawDataBot](https://t.me/RawDataBot)** di Telegram.
 2. Klik `/start`. Bot akan menampilkan `Id` akun Telegram Anda (contoh: `123456789`).
-3. Jika ingin mengirim ke grup/channel:
-   - Tambahkan bot Anda ke grup/channel sebagai Admin.
-   - Forward salah satu pesan dari grup ke `@RawDataBot` untuk mengetahui Chat ID grup (biasanya diawali tanda `-` atau `-100`).
-4. Masukkan Chat ID tersebut ke kolom `"chatId"` di `config.json`.
-5. Buka chat dengan bot Anda dan klik `/start` agar bot memiliki izin mengirim pesan ke Anda.
+3. Masukkan Chat ID tersebut ke kolom `"chat_id_admin"` di `config.json`.
+4. Chat ID ini akan memiliki hak akses penuh sebagai **Super Admin**.
+
+---
+
+## 👥 Sistem Bot Publik & Persetujuan Admin (Public Bot with Approval)
+
+Bot ini dapat diakses secara publik oleh siapa saja tanpa perlu konfigurasi Chat ID manual satu per satu:
+1. **Pengguna Baru:** Saat pengguna baru membuka bot dan mengetik `/start`, bot otomatis mendaftarkan profil pengguna ke basis data `data/users.json` dengan status `pending`.
+2. **Notifikasi Instan ke Admin:** Admin langsung menerima pesan notifikasi di Telegram dengan tombol interaktif **[ ✅ Setujui (Approve) ]** dan **[ ❌ Tolak (Reject) ]**.
+3. **Pemberitahuan ke Pengguna:** Pengguna menerima pesan bahwa akses sedang menunggu persetujuan admin.
+4. **Setelah Disetujui:** Pengguna langsung menerima notifikasi selamat datang dan keyboard menu untuk mengakses seluruh fitur bot.
+5. **Database Pengguna:** Seluruh data pengguna disimpan dalam file JSON di `data/users.json`.
 
 ---
 
@@ -221,6 +231,16 @@ Anda dapat menekan tombol keyboard kapan saja atau menggunakan perintah slash be
 | `/help` | Menampilkan panduan dan penjelasan indikator |
 
 *(Catatan: Anda dapat mengetikkan koin apapun langsung dengan tanda slash, misalnya `/doge` atau `/pepe`, tanpa perlu mendaftarkannya terlebih dahulu di `config.json`)*.
+
+### 👑 Perintah Khusus Admin (`chat_id_admin`):
+
+| Perintah | Deskripsi |
+|---|---|
+| `/admin` | **Admin Dashboard**: Membuka panel kontrol admin interaktif (statistik pengguna, antrean persetujuan, kelola user) |
+| `/users` | **Daftar Pengguna**: Melihat ringkasan seluruh pengguna yang terdaftar di database |
+| `/approve <chatId>` | Menyetujui akses pengguna secara instan |
+| `/reject <chatId>` | Menolak akses pengguna |
+| `/broadcast <pesan>` | Mengirim pesan siaran (pengumuman) ke seluruh pengguna yang telah disetujui |
 
 ---
 

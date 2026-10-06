@@ -15,10 +15,18 @@ import {
   formatHelpMessage,
   formatSymbolDisplay,
   escapeHtml,
-  BotStatusInfo
+  BotStatusInfo,
+  formatAdminDashboard,
+  formatAdminUsersList,
+  formatAdminUserDetail,
+  formatNewUserRequestMessage,
+  formatWaitingApprovalMessage,
+  formatUserApprovedNotification,
+  formatUserRejectedNotification
 } from './formatter.js';
 import { SignalResult } from '../strategy/signal.js';
 import { TradeWatcherService } from '../watcher/tradeWatcher.js';
+import { UserManager } from '../user/userManager.js';
 
 export interface TelegramBotHandlers {
   onScanAll: (timeframe?: string) => Promise<SignalResult[]>;
@@ -46,7 +54,12 @@ const RESERVED_COMMANDS = new Set([
   'unwatch',
   'analyze',
   'entry',
-  'cek'
+  'cek',
+  'admin',
+  'users',
+  'approve',
+  'reject',
+  'broadcast'
 ]);
 
 export class TelegramBotService {
@@ -54,11 +67,20 @@ export class TelegramBotService {
   private config: AppConfig;
   private handlers?: TelegramBotHandlers;
   private watcherService?: TradeWatcherService;
+  private userManager: UserManager;
   private isRunning = false;
 
-  constructor(config: AppConfig) {
+  constructor(config: AppConfig, userManager?: UserManager) {
     this.config = config;
     this.bot = new Telegraf(config.telegram.token);
+    this.userManager = userManager || new UserManager(config.telegram.adminChatId);
+  }
+
+  /**
+   * Access the UserManager instance
+   */
+  public getUserManager(): UserManager {
+    return this.userManager;
   }
 
   /**
@@ -71,19 +93,25 @@ export class TelegramBotService {
   /**
    * Main persistent reply keyboard with core shortcuts
    */
-  public getMainReplyKeyboard() {
-    return Markup.keyboard([
+  public getMainReplyKeyboard(isAdmin: boolean = false) {
+    const buttons = [
       ['🔍 Screener (/find)', '⚡ Scalp Radar (/scalp)'],
       ['🎯 Daily Entry (/daily)', '📋 Watchers (/watchers)'],
       ['📊 Scan Watchlist (/scan)', 'ℹ️ Help & Status (/help)']
-    ]).resize();
+    ];
+
+    if (isAdmin) {
+      buttons.push(['👑 Admin Menu (/admin)']);
+    }
+
+    return Markup.keyboard(buttons).resize();
   }
 
   /**
    * Main interactive inline keyboard for /menu
    */
-  public getMainInlineKeyboard() {
-    return Markup.inlineKeyboard([
+  public getMainInlineKeyboard(isAdmin: boolean = false) {
+    const buttons = [
       [
         Markup.button.callback('🔍 Screener (/find)', 'menu:find'),
         Markup.button.callback('⚡ Scalp Radar (/scalp)', 'menu:scalp')
@@ -98,6 +126,33 @@ export class TelegramBotService {
       ],
       [
         Markup.button.callback('📖 Panduan & Help (/help)', 'menu:help')
+      ]
+    ];
+
+    if (isAdmin) {
+      buttons.push([
+        Markup.button.callback('👑 Admin Panel (/admin)', 'menu:admin')
+      ]);
+    }
+
+    return Markup.inlineKeyboard(buttons);
+  }
+
+  /**
+   * Admin interactive inline keyboard for /admin dashboard
+   */
+  public getAdminInlineKeyboard(pendingCount: number = 0) {
+    return Markup.inlineKeyboard([
+      [
+        Markup.button.callback('👥 Daftar Pengguna', 'admin:users'),
+        Markup.button.callback(`⏳ Menunggu Approval (${pendingCount})`, 'admin:pending')
+      ],
+      [
+        Markup.button.callback('📢 Info Broadcast', 'admin:broadcast_info'),
+        Markup.button.callback('🔄 Refresh Dashboard', 'admin:menu')
+      ],
+      [
+        Markup.button.callback('🏠 Menu Utama', 'admin:main_menu')
       ]
     ]);
   }
@@ -122,20 +177,85 @@ export class TelegramBotService {
   public registerHandlers(handlers: TelegramBotHandlers): void {
     this.handlers = handlers;
 
-    // Security Middleware: Authorize only the configured chatId
+    // Security Middleware: User Registration & Admin Approval
     this.bot.use(async (ctx, next) => {
       const chatId = ctx.chat?.id.toString();
-      const authorizedChatId = this.config.telegram.chatId.toString();
+      if (!chatId) return;
 
-      if (!chatId || chatId !== authorizedChatId) {
-        logger.warn(`Unauthorized access attempt from Chat ID: ${chatId || 'unknown'}`);
-        await ctx.reply('⛔ <b>Unauthorized</b>. This bot is configured for private use.', {
-          parse_mode: 'HTML'
-        }).catch(() => {});
+      const from = ctx.from;
+      const { user, isNew } = this.userManager.registerOrUpdate(chatId, {
+        username: from?.username,
+        firstName: from?.first_name,
+        lastName: from?.last_name
+      });
+
+      // Admin always has immediate access
+      if (user.role === 'admin' || chatId === this.config.telegram.adminChatId) {
+        return next();
+      }
+
+      // If user is brand new (and not admin), notify user & alert admin
+      if (isNew) {
+        logger.info(`New user registration request from Chat ID: ${chatId} (@${user.username || 'unknown'})`);
+
+        // Send pending notification to user
+        const pendingUserMsg = formatWaitingApprovalMessage(user);
+        await ctx.reply(pendingUserMsg, { parse_mode: 'HTML' }).catch(() => {});
+
+        // Send alert to admin with inline Approve & Reject buttons
+        const adminAlertMsg = formatNewUserRequestMessage(user);
+        const adminKeyboard = Markup.inlineKeyboard([
+          [
+            Markup.button.callback('✅ Setujui (Approve)', `admin:approve:${chatId}`),
+            Markup.button.callback('❌ Tolak (Reject)', `admin:reject:${chatId}`)
+          ]
+        ]);
+
+        await this.bot.telegram.sendMessage(this.config.telegram.adminChatId, adminAlertMsg, {
+          parse_mode: 'HTML',
+          ...adminKeyboard
+        }).catch(err => {
+          logger.error(`Failed to notify admin of new user request: ${(err as Error).message}`);
+        });
+
         return;
       }
 
-      return next();
+      // If user is still pending approval
+      if (user.status === 'pending') {
+        if (ctx.callbackQuery) {
+          await ctx.answerCbQuery('⏳ Akun Anda masih menunggu persetujuan Admin.', { show_alert: true }).catch(() => {});
+        } else {
+          const pendingMsg = formatWaitingApprovalMessage(user);
+          await ctx.reply(pendingMsg, { parse_mode: 'HTML' }).catch(() => {});
+        }
+        return;
+      }
+
+      // If user was rejected
+      if (user.status === 'rejected') {
+        if (ctx.callbackQuery) {
+          await ctx.answerCbQuery('⛔ Akses Anda telah ditolak oleh Admin.', { show_alert: true }).catch(() => {});
+        } else {
+          await ctx.reply(formatUserRejectedNotification(), { parse_mode: 'HTML' }).catch(() => {});
+        }
+        return;
+      }
+
+      // If user was blocked
+      if (user.status === 'blocked') {
+        if (ctx.callbackQuery) {
+          await ctx.answerCbQuery().catch(() => {});
+        }
+        return;
+      }
+
+      // If user is approved, continue!
+      if (user.status === 'approved') {
+        return next();
+      }
+
+      return;
     });
 
     const exampleCoins = ['btc', 'eth', 'sol', 'sui', 'near', 'doge', 'pepe', 'xrp'];
@@ -143,8 +263,10 @@ export class TelegramBotService {
     // 1. Helper handlers
     const handleStart = async (ctx: any) => {
       try {
+        const chatId = ctx.chat?.id?.toString() || '';
+        const isAdmin = this.userManager.isAdmin(chatId);
         const text = formatStartMessage(exampleCoins);
-        await this.replySafe(ctx, text, this.getMainReplyKeyboard());
+        await this.replySafe(ctx, text, this.getMainReplyKeyboard(isAdmin));
       } catch (err) {
         logger.error(`Error handling /start: ${(err as Error).message}`);
       }
@@ -152,8 +274,10 @@ export class TelegramBotService {
 
     const handleHelp = async (ctx: any) => {
       try {
+        const chatId = ctx.chat?.id?.toString() || '';
+        const isAdmin = this.userManager.isAdmin(chatId);
         const text = formatHelpMessage();
-        await this.replySafe(ctx, text, this.getMainReplyKeyboard());
+        await this.replySafe(ctx, text, this.getMainReplyKeyboard(isAdmin));
       } catch (err) {
         logger.error(`Error handling /help: ${(err as Error).message}`);
       }
@@ -162,9 +286,11 @@ export class TelegramBotService {
     const handleStatus = async (ctx: any) => {
       try {
         if (!this.handlers) return;
+        const chatId = ctx.chat?.id?.toString() || '';
+        const isAdmin = this.userManager.isAdmin(chatId);
         const statusInfo = this.handlers.getStatusInfo();
         const text = formatBotStatusMessage(statusInfo);
-        await this.replySafe(ctx, text, this.getMainReplyKeyboard());
+        await this.replySafe(ctx, text, this.getMainReplyKeyboard(isAdmin));
       } catch (err) {
         logger.error(`Error handling /status: ${(err as Error).message}`);
       }
@@ -172,7 +298,9 @@ export class TelegramBotService {
 
     const handleMenu = async (ctx: any) => {
       try {
-        const menuText = `📱 <b>CHAEWON CRYPTO SIGNAL — MAIN MENU</b>\n\n` +
+        const chatId = ctx.chat?.id?.toString() || '';
+        const isAdmin = this.userManager.isAdmin(chatId);
+        let menuText = `📱 <b>CHAEWON CRYPTO SIGNAL — MAIN MENU</b>\n\n` +
           `Pilih perintah melalui tombol menu interaktif berikut atau gunakan tombol keyboard di bawah layar:\n\n` +
           `• 🔍 <b>Screener (/find)</b>: Scan 30 koin aktif di Binance\n` +
           `• ⚡ <b>Scalp Radar (/scalp)</b>: Momentum cepat timeframe 15m/30m\n` +
@@ -181,18 +309,43 @@ export class TelegramBotService {
           `• 📊 <b>Scan Watchlist (/scan)</b>: Scan pair koin di daftar pantauan\n` +
           `• ℹ️ <b>Help &amp; Status (/help)</b>: Info status bot &amp; panduan risiko`;
 
+        if (isAdmin) {
+          menuText += `\n• 👑 <b>Admin Panel (/admin)</b>: Kelola pengguna &amp; persetujuan`;
+        }
+
         await ctx.reply(menuText, {
           parse_mode: 'HTML',
-          ...this.getMainInlineKeyboard()
+          ...this.getMainInlineKeyboard(isAdmin)
         });
       } catch (err) {
         logger.error(`Error handling /menu: ${(err as Error).message}`);
       }
     };
 
+    const handleAdminMenu = async (ctx: any) => {
+      try {
+        const chatId = ctx.chat?.id?.toString() || '';
+        if (!this.userManager.isAdmin(chatId)) {
+          await ctx.reply('⛔ Perintah ini hanya dapat diakses oleh Admin.');
+          return;
+        }
+
+        const stats = this.userManager.getStats();
+        const text = formatAdminDashboard(stats);
+        await ctx.reply(text, {
+          parse_mode: 'HTML',
+          ...this.getAdminInlineKeyboard(stats.pending)
+        });
+      } catch (err) {
+        logger.error(`Error handling /admin: ${(err as Error).message}`);
+      }
+    };
+
     const handleScreener = async (ctx: any, timeframe?: string) => {
       try {
         if (!this.handlers) return;
+        const chatId = ctx.chat?.id?.toString() || '';
+        const isAdmin = this.userManager.isAdmin(chatId);
         const tf = timeframe || this.config.trading.timeframe;
         await ctx.reply(`⏳ <i>Scanning 30 koin volume tertinggi di Binance (${tf}) untuk mencari peluang entry...</i>`, {
           parse_mode: 'HTML'
@@ -200,7 +353,7 @@ export class TelegramBotService {
 
         const { results, totalScanned } = await this.handlers.onScanScreener(30, tf);
         const text = formatScreenerMessage(results, totalScanned, tf);
-        await this.replySafe(ctx, text, this.getMainReplyKeyboard());
+        await this.replySafe(ctx, text, this.getMainReplyKeyboard(isAdmin));
       } catch (err) {
         logger.error(`Error handling screener: ${(err as Error).message}`);
         await ctx.reply(`❌ Gagal melakukan screener market: ${escapeHtml((err as Error).message)}`);
@@ -210,6 +363,8 @@ export class TelegramBotService {
     const handleScalp = async (ctx: any, timeframe?: string) => {
       try {
         if (!this.handlers) return;
+        const chatId = ctx.chat?.id?.toString() || '';
+        const isAdmin = this.userManager.isAdmin(chatId);
         const tf = timeframe === '30m' ? '30m' : '15m';
 
         await ctx.reply(`⚡ <i>Memindai peluang momentum scalping cepat (${tf})...</i>`, {
@@ -218,7 +373,7 @@ export class TelegramBotService {
 
         const { results, totalScanned } = await this.handlers.onScanScalping(25, tf);
         const text = formatScalpingMessage(results, totalScanned, tf);
-        await this.replySafe(ctx, text, this.getMainReplyKeyboard());
+        await this.replySafe(ctx, text, this.getMainReplyKeyboard(isAdmin));
       } catch (err) {
         logger.error(`Error handling /scalp: ${(err as Error).message}`);
         await ctx.reply(`❌ Gagal scan scalping: ${escapeHtml((err as Error).message)}`);
@@ -228,6 +383,8 @@ export class TelegramBotService {
     const handleDaily = async (ctx: any, timeframe?: string) => {
       try {
         if (!this.handlers) return;
+        const chatId = ctx.chat?.id?.toString() || '';
+        const isAdmin = this.userManager.isAdmin(chatId);
         const tf = timeframe || this.config.dailyTrading?.timeframe || '1h';
         await ctx.reply(`🎯 <i>Menganalisa setup peluang entry Daily Trading (${tf}) di Binance Spot...</i>`, {
           parse_mode: 'HTML'
@@ -246,7 +403,7 @@ export class TelegramBotService {
             ...Markup.inlineKeyboard(buttons)
           });
         } else {
-          await this.replySafe(ctx, text, this.getMainReplyKeyboard());
+          await this.replySafe(ctx, text, this.getMainReplyKeyboard(isAdmin));
         }
       } catch (err) {
         logger.error(`Error handling /daily: ${(err as Error).message}`);
@@ -260,9 +417,14 @@ export class TelegramBotService {
           await ctx.reply('ℹ️ Watcher service belum diaktifkan.');
           return;
         }
-        const active = this.watcherService.getActiveWatchers();
+        const chatId = ctx.chat?.id?.toString() || '';
+        const isAdmin = this.userManager.isAdmin(chatId);
+        const parts = ctx.message?.text?.trim().split(/\s+/) || [];
+        const showAll = isAdmin && parts[1]?.toLowerCase() === 'all';
+
+        const active = this.watcherService.getActiveWatchers(showAll ? undefined : chatId);
         const text = formatWatchersListMessage(active);
-        await this.replySafe(ctx, text, this.getMainReplyKeyboard());
+        await this.replySafe(ctx, text, this.getMainReplyKeyboard(isAdmin));
       } catch (err) {
         logger.error(`Error handling /watchers: ${(err as Error).message}`);
       }
@@ -271,13 +433,15 @@ export class TelegramBotService {
     const handleScan = async (ctx: any, timeframe?: string) => {
       try {
         if (!this.handlers) return;
+        const chatId = ctx.chat?.id?.toString() || '';
+        const isAdmin = this.userManager.isAdmin(chatId);
         const tf = timeframe || this.config.trading.timeframe;
         await ctx.reply(`⏳ <i>Scanning watchlist pair (${tf})...</i>`, {
           parse_mode: 'HTML'
         });
         const results = await this.handlers.onScanAll(tf);
         const text = formatScanSummaryMessage(results);
-        await this.replySafe(ctx, text, this.getMainReplyKeyboard());
+        await this.replySafe(ctx, text, this.getMainReplyKeyboard(isAdmin));
       } catch (err) {
         logger.error(`Error handling /scan: ${(err as Error).message}`);
         await ctx.reply(`❌ Gagal scan market: ${escapeHtml((err as Error).message)}`);
@@ -326,14 +490,15 @@ export class TelegramBotService {
         const clean = coin.toUpperCase().replace(/[^A-Z0-9]/g, '');
         const sym = clean.endsWith('USDT') ? clean : `${clean}USDT`;
 
-        if (this.watcherService) {
-          const removed = this.watcherService.removeWatcher(sym);
+        const chatId = ctx.chat?.id?.toString();
+        if (this.watcherService && chatId) {
+          const removed = this.watcherService.removeWatcher(sym, chatId);
           if (removed) {
             await ctx.reply(`✅ Pemantauan live untuk <b>${formatSymbolDisplay(sym)}</b> telah dibatalkan.`, {
               parse_mode: 'HTML'
             });
           } else {
-            await ctx.reply(`ℹ️ <b>${formatSymbolDisplay(sym)}</b> tidak ditemukan di daftar pantauan aktif.`, {
+            await ctx.reply(`ℹ️ <b>${formatSymbolDisplay(sym)}</b> tidak ditemukan di daftar pantauan aktif Anda.`, {
               parse_mode: 'HTML'
             });
           }
@@ -465,8 +630,9 @@ export class TelegramBotService {
     this.bot.action(/^unwatch:([A-Z0-9]+)$/i, async (ctx) => {
       try {
         const symbol = ctx.match[1].toUpperCase();
-        if (this.watcherService) {
-          this.watcherService.removeWatcher(symbol);
+        const chatId = ctx.chat?.id?.toString();
+        if (this.watcherService && chatId) {
+          this.watcherService.removeWatcher(symbol, chatId);
         }
         await ctx.answerCbQuery(`✅ Pantauan ${symbol} dihentikan.`);
         await ctx.reply(`✅ Pemantauan otomatis untuk <b>${formatSymbolDisplay(symbol)}</b> telah dihentikan.`, {
@@ -506,8 +672,401 @@ export class TelegramBotService {
       await ctx.answerCbQuery().catch(() => {});
       await handleHelp(ctx);
     });
+    this.bot.action('menu:admin', async (ctx) => {
+      await ctx.answerCbQuery().catch(() => {});
+      await handleAdminMenu(ctx);
+    });
 
-    // 4. Text Message listener: Keyboard menu buttons & Dynamic Coin tickers
+    // 4. Admin Menu & User Management Callbacks
+    this.bot.action('admin:menu', async (ctx) => {
+      try {
+        await ctx.answerCbQuery().catch(() => {});
+        const stats = this.userManager.getStats();
+        const text = formatAdminDashboard(stats);
+        await ctx.editMessageText(text, {
+          parse_mode: 'HTML',
+          ...this.getAdminInlineKeyboard(stats.pending)
+        });
+      } catch {
+        await handleAdminMenu(ctx);
+      }
+    });
+
+    this.bot.action('admin:main_menu', async (ctx) => {
+      await ctx.answerCbQuery().catch(() => {});
+      await handleMenu(ctx);
+    });
+
+    this.bot.action('admin:broadcast_info', async (ctx) => {
+      await ctx.answerCbQuery().catch(() => {});
+      const text = `📢 <b>PANDUAN BROADCAST PESAN</b>\n\n` +
+        `Untuk mengirim pesan siaran ke seluruh pengguna yang telah disetujui, gunakan perintah:\n\n` +
+        `<code>/broadcast &lt;isi pesan Anda&gt;</code>\n\n` +
+        `<b>Contoh:</b>\n<code>/broadcast Mohon perhatian, market sedang volatil tinggi hari ini.</code>`;
+      await ctx.reply(text, {
+        parse_mode: 'HTML',
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback('🔙 Kembali ke Dashboard', 'admin:menu')]
+        ])
+      });
+    });
+
+    this.bot.action('admin:users', async (ctx) => {
+      try {
+        await ctx.answerCbQuery().catch(() => {});
+        const users = this.userManager.getAllUsers();
+        const text = formatAdminUsersList(users);
+
+        const buttons: any[] = [];
+        const recent = users.slice(0, 6);
+        for (const u of recent) {
+          const name = [u.firstName, u.lastName].filter(Boolean).join(' ') || u.username || u.id;
+          buttons.push([Markup.button.callback(`👤 Kelola: ${name.slice(0, 20)}`, `admin:user:${u.id}`)]);
+        }
+        buttons.push([Markup.button.callback('🔙 Kembali ke Dashboard', 'admin:menu')]);
+
+        await ctx.editMessageText(text, {
+          parse_mode: 'HTML',
+          ...Markup.inlineKeyboard(buttons)
+        });
+      } catch (err) {
+        logger.error(`Error in admin:users callback: ${(err as Error).message}`);
+      }
+    });
+
+    this.bot.action('admin:pending', async (ctx) => {
+      try {
+        await ctx.answerCbQuery().catch(() => {});
+        const pending = this.userManager.getPendingUsers();
+        if (pending.length === 0) {
+          await ctx.editMessageText(
+            `⏳ <b>ANTREAN PERSETUJUAN PENGGUNA</b>\n\n<i>Saat ini tidak ada pengguna yang menunggu persetujuan.</i>`,
+            {
+              parse_mode: 'HTML',
+              ...Markup.inlineKeyboard([
+                [Markup.button.callback('🔙 Kembali ke Dashboard', 'admin:menu')]
+              ])
+            }
+          );
+          return;
+        }
+
+        let text = `⏳ <b>MENUNGGU PERSETUJUAN (${pending.length})</b>\n\n`;
+        const buttons: any[] = [];
+
+        pending.forEach((u, i) => {
+          const name = [u.firstName, u.lastName].filter(Boolean).join(' ') || 'User';
+          const username = u.username ? `@${escapeHtml(u.username)}` : '-';
+          text += `<b>${i + 1}. ${escapeHtml(name)}</b> (${username})\n`;
+          text += `   • ID: <code>${u.id}</code>\n`;
+          text += `   • Waktu: ${new Date(u.createdAt).toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' })}\n\n`;
+
+          buttons.push([
+            Markup.button.callback(`✅ Setujui ${name.slice(0, 12)}`, `admin:approve:${u.id}`),
+            Markup.button.callback(`❌ Tolak`, `admin:reject:${u.id}`)
+          ]);
+        });
+
+        buttons.push([Markup.button.callback('🔙 Kembali ke Dashboard', 'admin:menu')]);
+
+        await ctx.editMessageText(text, {
+          parse_mode: 'HTML',
+          ...Markup.inlineKeyboard(buttons)
+        });
+      } catch (err) {
+        logger.error(`Error in admin:pending callback: ${(err as Error).message}`);
+      }
+    });
+
+    this.bot.action(/^admin:user:(\d+)$/, async (ctx) => {
+      try {
+        await ctx.answerCbQuery().catch(() => {});
+        const targetId = ctx.match[1];
+        const user = this.userManager.getUser(targetId);
+        if (!user) {
+          await ctx.reply('❌ User tidak ditemukan.');
+          return;
+        }
+
+        const text = formatAdminUserDetail(user);
+        const buttons: any[] = [];
+
+        if (user.status === 'pending') {
+          buttons.push([
+            Markup.button.callback('✅ Setujui (Approve)', `admin:approve:${user.id}`),
+            Markup.button.callback('❌ Tolak (Reject)', `admin:reject:${user.id}`)
+          ]);
+        } else if (user.status === 'approved') {
+          if (user.role !== 'admin') {
+            buttons.push([
+              Markup.button.callback('❌ Cabut Akses (Reject)', `admin:reject:${user.id}`)
+            ]);
+          }
+        } else if (user.status === 'rejected') {
+          buttons.push([
+            Markup.button.callback('✅ Setujui Kembali (Approve)', `admin:approve:${user.id}`)
+          ]);
+        }
+
+        if (user.role !== 'admin') {
+          buttons.push([
+            Markup.button.callback('🗑️ Hapus User dari DB', `admin:delete:${user.id}`)
+          ]);
+        }
+
+        buttons.push([Markup.button.callback('🔙 Kembali ke Daftar', 'admin:users')]);
+
+        await ctx.editMessageText(text, {
+          parse_mode: 'HTML',
+          ...Markup.inlineKeyboard(buttons)
+        });
+      } catch (err) {
+        logger.error(`Error in admin:user callback: ${(err as Error).message}`);
+      }
+    });
+
+    this.bot.action(/^admin:approve:(\d+)$/, async (ctx) => {
+      try {
+        const targetChatId = ctx.match[1];
+        const adminChatId = ctx.chat?.id?.toString() || '';
+
+        if (!this.userManager.isAdmin(adminChatId)) {
+          await ctx.answerCbQuery('❌ Hanya admin yang dapat menyetujui user.', { show_alert: true });
+          return;
+        }
+
+        const approvedUser = this.userManager.approveUser(targetChatId);
+        if (!approvedUser) {
+          await ctx.answerCbQuery('❌ User tidak ditemukan.');
+          return;
+        }
+
+        await ctx.answerCbQuery(`✅ User disetujui!`);
+
+        const displayName = [approvedUser.firstName, approvedUser.lastName].filter(Boolean).join(' ') || approvedUser.username || targetChatId;
+        await ctx.editMessageText(
+          `✅ <b>USER BERHASIL DISETUJUI</b>\n\nUser <b>${escapeHtml(displayName)}</b> (ID: <code>${targetChatId}</code>) telah diaktifkan dan dapat menggunakan bot.`,
+          {
+            parse_mode: 'HTML',
+            ...Markup.inlineKeyboard([
+              [Markup.button.callback('👤 Kelola User', `admin:user:${targetChatId}`)],
+              [Markup.button.callback('🔙 Dashboard Admin', 'admin:menu')]
+            ])
+          }
+        ).catch(async () => {
+          await ctx.reply(`✅ User <b>${escapeHtml(displayName)}</b> (ID: <code>${targetChatId}</code>) telah disetujui.`, { parse_mode: 'HTML' });
+        });
+
+        // Notify user
+        await this.bot.telegram.sendMessage(targetChatId, formatUserApprovedNotification(), {
+          parse_mode: 'HTML',
+          ...this.getMainReplyKeyboard(false)
+        }).catch(err => {
+          logger.warn(`Could not send approval notification to user ${targetChatId}: ${(err as Error).message}`);
+        });
+      } catch (err) {
+        logger.error(`Error in admin:approve action: ${(err as Error).message}`);
+      }
+    });
+
+    this.bot.action(/^admin:reject:(\d+)$/, async (ctx) => {
+      try {
+        const targetChatId = ctx.match[1];
+        const adminChatId = ctx.chat?.id?.toString() || '';
+
+        if (!this.userManager.isAdmin(adminChatId)) {
+          await ctx.answerCbQuery('❌ Hanya admin yang dapat menolak user.', { show_alert: true });
+          return;
+        }
+
+        const rejectedUser = this.userManager.rejectUser(targetChatId);
+        if (!rejectedUser) {
+          await ctx.answerCbQuery('❌ User tidak ditemukan.');
+          return;
+        }
+
+        await ctx.answerCbQuery(`❌ User ditolak.`);
+
+        const displayName = [rejectedUser.firstName, rejectedUser.lastName].filter(Boolean).join(' ') || rejectedUser.username || targetChatId;
+        await ctx.editMessageText(
+          `❌ <b>USER DITOLAK</b>\n\nPermintaan akses dari <b>${escapeHtml(displayName)}</b> (ID: <code>${targetChatId}</code>) telah ditolak.`,
+          {
+            parse_mode: 'HTML',
+            ...Markup.inlineKeyboard([
+              [Markup.button.callback('👤 Kelola User', `admin:user:${targetChatId}`)],
+              [Markup.button.callback('🔙 Dashboard Admin', 'admin:menu')]
+            ])
+          }
+        ).catch(async () => {
+          await ctx.reply(`❌ User <b>${escapeHtml(displayName)}</b> (ID: <code>${targetChatId}</code>) telah ditolak.`, { parse_mode: 'HTML' });
+        });
+
+        // Notify user
+        await this.bot.telegram.sendMessage(targetChatId, formatUserRejectedNotification(), {
+          parse_mode: 'HTML'
+        }).catch(() => {});
+      } catch (err) {
+        logger.error(`Error in admin:reject action: ${(err as Error).message}`);
+      }
+    });
+
+    this.bot.action(/^admin:delete:(\d+)$/, async (ctx) => {
+      try {
+        const targetChatId = ctx.match[1];
+        const adminChatId = ctx.chat?.id?.toString() || '';
+
+        if (!this.userManager.isAdmin(adminChatId)) {
+          await ctx.answerCbQuery('❌ Hanya admin yang dapat menghapus user.', { show_alert: true });
+          return;
+        }
+
+        const deleted = this.userManager.deleteUser(targetChatId);
+        if (deleted) {
+          await ctx.answerCbQuery('🗑️ User berhasil dihapus.');
+          await ctx.editMessageText(
+            `🗑️ <b>USER DIHAPUS</b>\n\nData user dengan ID <code>${targetChatId}</code> telah dihapus dari database.`,
+            {
+              parse_mode: 'HTML',
+              ...Markup.inlineKeyboard([
+                [Markup.button.callback('🔙 Daftar Pengguna', 'admin:users')],
+                [Markup.button.callback('🔙 Dashboard Admin', 'admin:menu')]
+              ])
+            }
+          );
+        } else {
+          await ctx.answerCbQuery('❌ Gagal menghapus user.');
+        }
+      } catch (err) {
+        logger.error(`Error in admin:delete action: ${(err as Error).message}`);
+      }
+    });
+
+    // 5. Admin Slash Commands
+    this.bot.command('admin', handleAdminMenu);
+
+    this.bot.command('users', async (ctx) => {
+      const chatId = ctx.chat?.id?.toString() || '';
+      if (!this.userManager.isAdmin(chatId)) {
+        await ctx.reply('⛔ Perintah ini hanya dapat diakses oleh Admin.');
+        return;
+      }
+      const users = this.userManager.getAllUsers();
+      const text = formatAdminUsersList(users);
+      await ctx.reply(text, {
+        parse_mode: 'HTML',
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback('🔙 Kembali ke Dashboard', 'admin:menu')]
+        ])
+      });
+    });
+
+    this.bot.command('approve', async (ctx) => {
+      const chatId = ctx.chat?.id?.toString() || '';
+      if (!this.userManager.isAdmin(chatId)) {
+        await ctx.reply('⛔ Perintah ini hanya dapat diakses oleh Admin.');
+        return;
+      }
+      const parts = ctx.message.text.trim().split(/\s+/);
+      const targetId = parts[1];
+      if (!targetId) {
+        await ctx.reply('⚠️ Format: <code>/approve &lt;ChatID&gt;</code>\n\nContoh: <code>/approve 12345678</code>', {
+          parse_mode: 'HTML'
+        });
+        return;
+      }
+
+      const approved = this.userManager.approveUser(targetId);
+      if (!approved) {
+        await ctx.reply(`❌ User dengan Chat ID <code>${targetId}</code> tidak ditemukan.`, { parse_mode: 'HTML' });
+        return;
+      }
+
+      const displayName = [approved.firstName, approved.lastName].filter(Boolean).join(' ') || approved.username || targetId;
+      await ctx.reply(`✅ User <b>${escapeHtml(displayName)}</b> (ID: <code>${targetId}</code>) berhasil disetujui!`, {
+        parse_mode: 'HTML'
+      });
+
+      // Notify user
+      await this.bot.telegram.sendMessage(targetId, formatUserApprovedNotification(), {
+        parse_mode: 'HTML',
+        ...this.getMainReplyKeyboard(false)
+      }).catch(err => {
+        logger.warn(`Could not send approval notice to user ${targetId}: ${(err as Error).message}`);
+      });
+    });
+
+    this.bot.command('reject', async (ctx) => {
+      const chatId = ctx.chat?.id?.toString() || '';
+      if (!this.userManager.isAdmin(chatId)) {
+        await ctx.reply('⛔ Perintah ini hanya dapat diakses oleh Admin.');
+        return;
+      }
+      const parts = ctx.message.text.trim().split(/\s+/);
+      const targetId = parts[1];
+      if (!targetId) {
+        await ctx.reply('⚠️ Format: <code>/reject &lt;ChatID&gt;</code>\n\nContoh: <code>/reject 12345678</code>', {
+          parse_mode: 'HTML'
+        });
+        return;
+      }
+
+      const rejected = this.userManager.rejectUser(targetId);
+      if (!rejected) {
+        await ctx.reply(`❌ User dengan Chat ID <code>${targetId}</code> tidak ditemukan.`, { parse_mode: 'HTML' });
+        return;
+      }
+
+      const displayName = [rejected.firstName, rejected.lastName].filter(Boolean).join(' ') || rejected.username || targetId;
+      await ctx.reply(`❌ User <b>${escapeHtml(displayName)}</b> (ID: <code>${targetId}</code>) telah ditolak.`, {
+        parse_mode: 'HTML'
+      });
+
+      // Notify user
+      await this.bot.telegram.sendMessage(targetId, formatUserRejectedNotification(), {
+        parse_mode: 'HTML'
+      }).catch(() => {});
+    });
+
+    this.bot.command('broadcast', async (ctx) => {
+      const chatId = ctx.chat?.id?.toString() || '';
+      if (!this.userManager.isAdmin(chatId)) {
+        await ctx.reply('⛔ Perintah ini hanya dapat digunakan oleh Admin.');
+        return;
+      }
+
+      const text = ctx.message.text.replace(/^\/broadcast(\s+)?/, '').trim();
+      if (!text) {
+        await ctx.reply(
+          '⚠️ <b>Format Broadcast:</b>\n<code>/broadcast &lt;pesan Anda&gt;</code>\n\n<b>Contoh:</b>\n<code>/broadcast Halo semuanya, analisa koin hari ini telah diupdate!</code>',
+          { parse_mode: 'HTML' }
+        );
+        return;
+      }
+
+      const approved = this.userManager.getApprovedUsers();
+      let sentCount = 0;
+      const broadcastMsg = `📢 <b>PENGUMUMAN DARI ADMIN</b>\n\n${escapeHtml(text)}`;
+
+      await ctx.reply(`⏳ Mengirim broadcast ke ${approved.length} pengguna aktif...`);
+
+      for (const u of approved) {
+        try {
+          await this.bot.telegram.sendMessage(u.id, broadcastMsg, { parse_mode: 'HTML' });
+          sentCount++;
+        } catch (err: any) {
+          logger.warn(`Failed broadcast to user ${u.id}: ${err.message}`);
+          if (err.description?.includes('bot was blocked') || err.message?.includes('blocked')) {
+            this.userManager.blockUser(u.id);
+          }
+        }
+      }
+
+      await ctx.reply(`✅ Broadcast selesai! Berhasil terkirim ke <b>${sentCount}/${approved.length}</b> pengguna.`, {
+        parse_mode: 'HTML'
+      });
+    });
+
+    // 6. Text Message listener: Keyboard menu buttons & Dynamic Coin tickers
     this.bot.on('text', async (ctx, next) => {
       const rawText = ctx.message.text.trim();
 
@@ -536,6 +1095,10 @@ export class TelegramBotService {
         await handleHelp(ctx);
         return;
       }
+      if (/^👑.*admin/i.test(rawText) || rawText === '👑 Admin Menu (/admin)') {
+        await handleAdminMenu(ctx);
+        return;
+      }
 
       if (!rawText.startsWith('/')) {
         return next();
@@ -550,8 +1113,9 @@ export class TelegramBotService {
       if (unwatchMatch) {
         const coin = unwatchMatch[1].toUpperCase();
         const sym = coin.endsWith('USDT') ? coin : `${coin}USDT`;
-        if (this.watcherService) {
-          this.watcherService.removeWatcher(sym);
+        const chatId = ctx.chat?.id?.toString();
+        if (this.watcherService && chatId) {
+          this.watcherService.removeWatcher(sym, chatId);
           await ctx.reply(`✅ Pemantauan live untuk <b>${formatSymbolDisplay(sym)}</b> telah dihentikan.`, {
             parse_mode: 'HTML'
           });
@@ -594,6 +1158,7 @@ export class TelegramBotService {
           { command: 'watchers', description: '📋 Pantauan live trade aktif (TP/SL)' },
           { command: 'scan', description: '📊 Scan watchlist pair' },
           { command: 'status', description: '⚙️ Status operasional & scanner bot' },
+          { command: 'admin', description: '👑 Menu admin & kelola user (khusus admin)' },
           { command: 'help', description: '📖 Panduan lengkap & risk management' }
         ]);
         logger.info('Telegram Bot native command menu registered successfully');
@@ -614,7 +1179,7 @@ export class TelegramBotService {
    * Send notification / alert message to configured Telegram Chat ID
    */
   public async sendAlert(htmlMessage: string, targetChatId?: string): Promise<boolean> {
-    const destChatId = targetChatId || this.config.telegram.chatId;
+    const destChatId = targetChatId || this.config.telegram.adminChatId;
     try {
       await this.bot.telegram.sendMessage(destChatId, htmlMessage, {
         parse_mode: 'HTML'
@@ -634,7 +1199,7 @@ export class TelegramBotService {
   }
 
   /**
-   * Send Buy Signal notification (with Notice Me button!)
+   * Send Buy Signal notification (with Notice Me button!) to all approved users
    */
   public async sendBuySignalAlert(result: SignalResult): Promise<boolean> {
     const message = formatBuySignalMessage(result);
@@ -642,19 +1207,32 @@ export class TelegramBotService {
       [Markup.button.callback('🔔 Notice Me (Pantau Otomatis)', `notice:${result.symbol}:${result.timeframe}`)]
     ]);
 
-    try {
-      await this.bot.telegram.sendMessage(this.config.telegram.chatId, message, {
-        parse_mode: 'HTML',
-        ...inlineKeyboard
-      });
-      return true;
-    } catch {
-      return this.sendAlert(message);
+    const approvedUsers = this.userManager.getApprovedUsers();
+    if (approvedUsers.length === 0) {
+      return this.sendAlert(message, this.config.telegram.adminChatId);
     }
+
+    let successCount = 0;
+    for (const user of approvedUsers) {
+      try {
+        await this.bot.telegram.sendMessage(user.id, message, {
+          parse_mode: 'HTML',
+          ...inlineKeyboard
+        });
+        successCount++;
+      } catch (err: any) {
+        logger.warn(`Failed to send BUY signal to user ${user.id}: ${err.message}`);
+        if (err.description?.includes('bot was blocked') || err.message?.includes('blocked')) {
+          this.userManager.blockUser(user.id);
+        }
+      }
+    }
+
+    return successCount > 0;
   }
 
   /**
-   * Broadcast daily trading suggestions update to Telegram
+   * Broadcast daily trading suggestions update to all approved users
    */
   public async sendDailyTradingUpdate(
     results: SignalResult[],
@@ -672,21 +1250,34 @@ export class TelegramBotService {
       inlineKeyboard = Markup.inlineKeyboard(buttons);
     }
 
-    try {
-      if (inlineKeyboard) {
-        await this.bot.telegram.sendMessage(this.config.telegram.chatId, text, {
-          parse_mode: 'HTML',
-          ...inlineKeyboard
-        });
-      } else {
-        await this.bot.telegram.sendMessage(this.config.telegram.chatId, text, {
-          parse_mode: 'HTML'
-        });
-      }
-      return true;
-    } catch {
-      return this.sendAlert(text);
+    const approvedUsers = this.userManager.getApprovedUsers();
+    if (approvedUsers.length === 0) {
+      return this.sendAlert(text, this.config.telegram.adminChatId);
     }
+
+    let successCount = 0;
+    for (const user of approvedUsers) {
+      try {
+        if (inlineKeyboard) {
+          await this.bot.telegram.sendMessage(user.id, text, {
+            parse_mode: 'HTML',
+            ...inlineKeyboard
+          });
+        } else {
+          await this.bot.telegram.sendMessage(user.id, text, {
+            parse_mode: 'HTML'
+          });
+        }
+        successCount++;
+      } catch (err: any) {
+        logger.warn(`Failed to send Daily Trading update to user ${user.id}: ${err.message}`);
+        if (err.description?.includes('bot was blocked') || err.message?.includes('blocked')) {
+          this.userManager.blockUser(user.id);
+        }
+      }
+    }
+
+    return successCount > 0;
   }
 
   /**

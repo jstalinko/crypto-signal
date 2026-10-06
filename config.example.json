@@ -1,7 +1,7 @@
 {
   "telegram": {
     "token": "YOUR_TELEGRAM_BOT_TOKEN",
-    "chatId": "YOUR_CHAT_ID",
+    "chat_id_admin": "YOUR_ADMIN_CHAT_ID",
     "cooldownMinutes": 30
   },
   "exchange": {

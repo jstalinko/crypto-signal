@@ -1,5 +1,6 @@
 import { SignalResult } from '../strategy/signal.js';
 import { formatPrice } from '../risk/riskManager.js';
+import { BotUser } from '../user/userManager.js';
 export { formatPrice } from '../risk/riskManager.js';
 
 export interface BotStatusInfo {
@@ -568,3 +569,146 @@ Bot akan:
 
 ⚠️ <i>Bot ini adalah alat bantu analisa teknikal spot dan bukan saran keuangan mutlak. Selalu gunakan stop loss dan money management bijak!</i>`;
 }
+
+/**
+ * Formats notification for Admin when a new user joins
+ */
+export function formatNewUserRequestMessage(user: BotUser): string {
+  const name = [user.firstName, user.lastName].filter(Boolean).join(' ') || 'Tidak diketahui';
+  const username = user.username ? `@${escapeHtml(user.username)}` : '<i>(Tidak ada)</i>';
+  const dateStr = new Date(user.createdAt).toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' });
+
+  return `🔔 <b>PERMINTAAN AKSES PENGGUNA BARU</b>
+
+👤 <b>Nama:</b> ${escapeHtml(name)}
+🏷️ <b>Username:</b> ${username}
+🆔 <b>Chat ID:</b> <code>${escapeHtml(user.id)}</code>
+📅 <b>Waktu Daftar:</b> ${dateStr}
+
+Silakan setujui atau tolak permintaan ini:`;
+}
+
+/**
+ * Formats message shown to user when they are waiting for approval
+ */
+export function formatWaitingApprovalMessage(user: BotUser): string {
+  const name = user.firstName ? escapeHtml(user.firstName) : 'Pengguna';
+  return `⏳ <b>AKSES MENUNGGU PERSETUJUAN ADMIN</b>
+
+Halo <b>${name}</b>, selamat datang di <b>Chaewon Crypto Signal</b>!
+
+Bot ini saat ini berada dalam mode akses publik terkelola dan memerlukan persetujuan Admin sebelum dapat digunakan.
+
+Permintaan akses Anda (Chat ID: <code>${escapeHtml(user.id)}</code>) telah dikirimkan ke Admin. Anda akan menerima notifikasi otomatis begitu akun Anda disetujui.`;
+}
+
+/**
+ * Formats notification sent to user when approved
+ */
+export function formatUserApprovedNotification(): string {
+  return `🎉 <b>SELAMAT! AKUN ANDA TELAH DISETUJUI!</b> 🟢
+
+Akses Anda ke <b>Chaewon Crypto Signal Bot</b> telah diaktifkan oleh Admin.
+
+Sekarang Anda dapat menggunakan seluruh fitur:
+• 🔍 Market Screener Binance (30 koin aktif)
+• ⚡ Scalp Radar momentum (15m / 30m)
+• 🎯 Rekomendasi Daily Trading
+• 🔔 Notice Me (Pemantau live TP/SL otomatis)
+• 📊 Analisa koin kustom (contoh: /btc, /sol, /near)
+
+Ketik /menu atau gunakan tombol keyboard di bawah untuk mulai!`;
+}
+
+/**
+ * Formats notification sent to user when rejected
+ */
+export function formatUserRejectedNotification(): string {
+  return `⚠️ <b>STATUS PERMINTAAN AKSES</b>
+
+Mohon maaf, permintaan akses Anda ke bot ini belum dapat disetujui oleh Admin saat ini.`;
+}
+
+/**
+ * Formats Admin Dashboard overview
+ */
+export function formatAdminDashboard(stats: {
+  total: number;
+  approved: number;
+  pending: number;
+  rejected: number;
+  blocked: number;
+}): string {
+  return `👑 <b>CHAEWON SIGNAL — ADMIN DASHBOARD</b>
+
+📊 <b>Ringkasan Pengguna:</b>
+• 👥 Total Pengguna: <b>${stats.total}</b>
+• ✅ Disetujui (Active): <b>${stats.approved}</b>
+• ⏳ Menunggu (Pending): <b>${stats.pending}</b>
+• ❌ Ditolak (Rejected): <b>${stats.rejected}</b>
+• 🚫 Diblokir (Blocked): <b>${stats.blocked}</b>
+
+⚙️ <i>Gunakan menu tombol di bawah untuk melihat daftar pengguna, meninjau persetujuan, atau broadcast pesan.</i>`;
+}
+
+/**
+ * Formats users list for Admin view
+ */
+export function formatAdminUsersList(users: BotUser[]): string {
+  if (users.length === 0) {
+    return `👥 <b>DAFTAR PENGGUNA BOT</b>\n\n<i>Belum ada pengguna terdaftar di sistem.</i>`;
+  }
+
+  let text = `👥 <b>DAFTAR PENGGUNA BOT (${users.length})</b>\n\n`;
+
+  const displayUsers = users.slice(0, 15);
+  displayUsers.forEach((u, i) => {
+    const statusEmoji =
+      u.status === 'approved' ? '✅' :
+      u.status === 'pending' ? '⏳' :
+      u.status === 'rejected' ? '❌' : '🚫';
+    const roleBadge = u.role === 'admin' ? '👑 [ADMIN]' : '';
+    const name = [u.firstName, u.lastName].filter(Boolean).join(' ') || 'User';
+    const username = u.username ? `@${escapeHtml(u.username)}` : '-';
+
+    text += `<b>${i + 1}. ${statusEmoji} ${escapeHtml(name)}</b> ${roleBadge}\n`;
+    text += `   • ID: <code>${escapeHtml(u.id)}</code> | ${username}\n`;
+    text += `   • Status: <b>${u.status.toUpperCase()}</b>\n\n`;
+  });
+
+  if (users.length > 15) {
+    text += `<i>... dan ${users.length - 15} pengguna lainnya.</i>\n\n`;
+  }
+
+  text += `💡 <i>Ketik /approve &lt;ID&gt; atau /reject &lt;ID&gt; untuk tindakan instan.</i>`;
+  return text;
+}
+
+/**
+ * Formats single user details for Admin view
+ */
+export function formatAdminUserDetail(user: BotUser): string {
+  const name = [user.firstName, user.lastName].filter(Boolean).join(' ') || 'Tidak diketahui';
+  const username = user.username ? `@${escapeHtml(user.username)}` : '<i>(Tidak ada)</i>';
+  const statusEmoji =
+    user.status === 'approved' ? '✅' :
+    user.status === 'pending' ? '⏳' :
+    user.status === 'rejected' ? '❌' : '🚫';
+
+  let text = `👤 <b>DETAIL PENGGUNA</b>\n\n`;
+  text += `• <b>Nama:</b> ${escapeHtml(name)}\n`;
+  text += `• <b>Username:</b> ${username}\n`;
+  text += `• <b>Chat ID:</b> <code>${escapeHtml(user.id)}</code>\n`;
+  text += `• <b>Peran (Role):</b> ${user.role === 'admin' ? '👑 Admin' : '👤 Regular User'}\n`;
+  text += `• <b>Status:</b> ${statusEmoji} <b>${user.status.toUpperCase()}</b>\n`;
+  text += `• <b>Waktu Daftar:</b> ${new Date(user.createdAt).toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' })}\n`;
+  if (user.approvedAt) {
+    text += `• <b>Waktu Disetujui:</b> ${new Date(user.approvedAt).toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' })}\n`;
+  }
+  if (user.lastActiveAt) {
+    text += `• <b>Terakhir Aktif:</b> ${new Date(user.lastActiveAt).toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' })}\n`;
+  }
+
+  return text;
+}
+

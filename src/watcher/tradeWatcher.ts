@@ -133,40 +133,63 @@ export class TradeWatcherService {
       lastCheckedAt: Date.now()
     };
 
-    this.watchers.set(symbol, trade);
+    const key = `${symbol}_${params.chatId}`;
+    this.watchers.set(key, trade);
     this.saveToDisk();
-    logger.info(`Trade watcher registered for ${symbol} (Entry: ${trade.entryPrice}, SL: ${trade.stopLoss}, TP1: ${trade.takeProfit1})`);
+    logger.info(`Trade watcher registered for ${symbol} by user ${params.chatId} (Entry: ${trade.entryPrice}, SL: ${trade.stopLoss}, TP1: ${trade.takeProfit1})`);
     return trade;
   }
 
   /**
    * Cancel / remove a trade watcher
    */
-  public removeWatcher(symbol: string): boolean {
+  public removeWatcher(symbol: string, chatId?: string): boolean {
     const cleanSym = symbol.toUpperCase();
-    const existing = this.watchers.get(cleanSym);
-    if (!existing) return false;
+    if (chatId) {
+      const key = `${cleanSym}_${chatId}`;
+      const existing = this.watchers.get(key);
+      if (!existing) return false;
 
-    this.watchers.delete(cleanSym);
-    this.saveToDisk();
-    logger.info(`Trade watcher removed for ${cleanSym}`);
-    return true;
+      this.watchers.delete(key);
+      this.saveToDisk();
+      logger.info(`Trade watcher removed for ${cleanSym} (User: ${chatId})`);
+      return true;
+    }
+
+    // If no chatId provided, remove all matching symbols
+    let removedAny = false;
+    for (const [k, trade] of this.watchers.entries()) {
+      if (trade.symbol === cleanSym) {
+        this.watchers.delete(k);
+        removedAny = true;
+      }
+    }
+
+    if (removedAny) {
+      this.saveToDisk();
+      logger.info(`All trade watchers removed for ${cleanSym}`);
+    }
+    return removedAny;
   }
 
   /**
-   * Get all active watchers
+   * Get active watchers (optionally filtered by chatId)
    */
-  public getActiveWatchers(): WatchedTrade[] {
+  public getActiveWatchers(chatId?: string): WatchedTrade[] {
     return Array.from(this.watchers.values()).filter(
-      w => w.status === 'ACTIVE' || w.status === 'TP1_HIT'
+      w => (w.status === 'ACTIVE' || w.status === 'TP1_HIT') && (!chatId || w.chatId === chatId)
     );
   }
 
   /**
    * Get single watcher
    */
-  public getWatcher(symbol: string): WatchedTrade | undefined {
-    return this.watchers.get(symbol.toUpperCase());
+  public getWatcher(symbol: string, chatId?: string): WatchedTrade | undefined {
+    const cleanSym = symbol.toUpperCase();
+    if (chatId) {
+      return this.watchers.get(`${cleanSym}_${chatId}`);
+    }
+    return Array.from(this.watchers.values()).find(w => w.symbol === cleanSym);
   }
 
   /**
@@ -179,7 +202,7 @@ export class TradeWatcherService {
 
     this.isChecking = true;
     try {
-      const symbols = active.map(w => w.symbol);
+      const symbols = Array.from(new Set(active.map(w => w.symbol)));
       const prices = await this.exchange.getPrices(symbols);
 
       for (const trade of active) {
@@ -327,7 +350,8 @@ Timeframe: <b>${trade.timeframe}</b>
         // Discard old completed or stopped trades
         const isOldCompleted = (item.status === 'COMPLETED' || item.status === 'STOPPED') && (now - item.createdAt > maxAgeMs);
         if (!isOldCompleted) {
-          this.watchers.set(item.symbol, item);
+          const key = item.chatId ? `${item.symbol}_${item.chatId}` : item.symbol;
+          this.watchers.set(key, item);
         }
       }
 

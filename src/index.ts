@@ -27,6 +27,9 @@ async function main(): Promise<void> {
   // 3. Initialize Telegram Bot Service & Trade Watcher
   const botService = new TelegramBotService(config);
   const watcherService = new TradeWatcherService(exchange, 30);
+  const userStats = botService.getUserManager().getStats();
+  logger.info(`Admin Chat ID: ${config.telegram.adminChatId}`);
+  logger.info(`User database: ${userStats.total} total (${userStats.approved} approved, ${userStats.pending} pending)`);
 
   // Link TradeWatcher alerts to Telegram Bot
   watcherService.setAlertCallback(async (chatId, message) => {
