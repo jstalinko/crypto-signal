@@ -1,6 +1,7 @@
 import { SignalResult } from '../strategy/signal.js';
 import { formatPrice } from '../risk/riskManager.js';
 import { BotUser } from '../user/userManager.js';
+import { AccountBalanceInfo, OrderExecutionResult } from '../exchange/binanceTrade.js';
 export { formatPrice } from '../risk/riskManager.js';
 
 export interface BotStatusInfo {
@@ -543,6 +544,8 @@ Bot analisa teknikal spot, scalping radar, rekomendasi trading harian &amp; trad
 • ⚡ <b>Scalp Radar (/scalp)</b> - Radar momentum scalping cepat (15m/30m)
 • 🎯 <b>Daily Entry (/daily)</b> - Rekomendasi sinyal entry trading harian (1h)
 • 📋 <b>Watchers (/watchers)</b> - Daftar live trade yang dipantau (TP/SL)
+• 💰 <b>Saldo Binance (/balance)</b> - Cek portofolio Spot &amp; saldo akun Binance
+• 🔗 <b>Akun Binance (/connect)</b> - Hubungkan API Key Binance untuk 1-Click Order
 • 📊 <b>Scan Watchlist (/scan)</b> - Scan koin di watchlist konfigurasi
 • ℹ️ <b>Help &amp; Status (/help)</b> - Panduan lengkap &amp; status bot
 
@@ -550,15 +553,19 @@ Bot analisa teknikal spot, scalping radar, rekomendasi trading harian &amp; trad
 • /daily - Dapatkan rekomendasi entry trading harian
 • /find atau /screener - Scan 30 koin volume tertinggi
 • /scalp [15m|30m] - Radar scalping cepat
+• /balance - Cek portofolio &amp; saldo live akun Binance
+• /connect - Hubungkan akun Binance Anda dengan aman
+• /disconnect - Putuskan sambungan akun Binance
 • /watchers - Cek status posisi live yang sedang dipantau
 • /analyze &lt;coin&gt; [tf] - Analisa koin apapun di Binance (contoh: <code>/analyze SUI</code> atau <code>/analyze SOL 1h</code>)
 • /&lt;coin&gt; - Shortcut cepat analisa koin (contoh: /btc, /eth, /sol, /near, /sui, /doge)
 • /menu - Tampilkan kembali menu tombol navigasi
 • /status - Cek status operasional &amp; scan scheduler bot
 
-🔔 <b>Fitur Otomatis:</b>
+🔔 <b>Fitur Otomatis &amp; Eksekusi:</b>
 1. <b>Update Trading Harian:</b> Bot otomatis mengirim update peluang entry daily trading ke chat ini.
-2. <b>Notice Me (Live TP/SL Alert):</b> Klik tombol <b>🔔 Notice Me</b> pada setiap sinyal untuk memantau harga secara live setiap 30 detik!`;
+2. <b>Notice Me (Live TP/SL Alert):</b> Klik tombol <b>🔔 Notice Me</b> pada setiap sinyal untuk memantau harga secara live setiap 15 detik!
+3. <b>1-Click Spot Buy:</b> Beli koin langsung dari Telegram begitu sinyal muncul hanya dengan 1 sentuhan!`;
 }
 
 /**
@@ -572,6 +579,9 @@ Gunakan keyboard tombol di bawah layar atau perintah slash berikut:
 • /find atau /screener - Scan 30 koin volume tertinggi di Binance, filter setup entry BUY &amp; WATCH.
 • /scalp [15m|30m] - Radar scalping cepat mencari momentum entry jangka pendek (15-30 menit).
 • /daily - Dapatkan rekomendasi entry trading harian dengan level Entry, TP1, TP2, dan SL terperinci.
+• /balance - Cek portofolio &amp; saldo live Spot Wallet Binance Anda.
+• /connect - Hubungkan akun Binance Anda menggunakan API Key (terenkripsi AES-256).
+• /disconnect - Putuskan sambungan dan hapus kredensial API Binance.
 • /watchers - Melihat daftar trade yang sedang dipantau live oleh bot.
 • /scan - Scan pair yang ada di daftar watchlist konfigurasi.
 • /menu - Membuka menu navigasi tombol interaktif.
@@ -746,5 +756,134 @@ export function formatAdminUserDetail(user: BotUser): string {
   }
 
   return text;
+}
+
+/**
+ * Formats Binance Spot Portfolio Balance message for /balance
+ */
+export function formatBinanceBalanceMessage(
+  info: AccountBalanceInfo,
+  maskedApiKey?: string
+): string {
+  const pad = (n: number) => n.toString().padStart(2, '0');
+  const d = new Date(info.updateTime || Date.now());
+  const timeStr = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())} WIB`;
+
+  let msg = `💰 <b>PORTOFOLIO SPOT BINANCE</b>\n\n`;
+
+  const keyDisplay = maskedApiKey ? `<code>${escapeHtml(maskedApiKey)}</code>` : 'Terhubung';
+  const tradeStatus = info.canTrade ? '🟢 Spot Trading Aktif' : '🟡 Read-Only';
+  msg += `🔑 API Key: ${keyDisplay}\n`;
+  msg += `⚡ Mode Akses: <b>${tradeStatus}</b>\n\n`;
+
+  msg += `💵 <b>Total Estimasi Saldo:</b> <b>${formatPrice(info.totalEstimatedUsdt)}</b>\n`;
+  msg += `<i>──────────────────────────────</i>\n\n`;
+
+  if (info.balances.length === 0) {
+    msg += `<i>Tidak ada saldo aset aktif di Spot Wallet (semua &lt; $0.10).</i>\n\n`;
+  } else {
+    msg += `📊 <b>Daftar Aset Aktif:</b>\n`;
+    for (const b of info.balances) {
+      const freeStr = b.free >= 1 ? b.free.toFixed(4) : b.free.toFixed(6);
+      const estStr = b.estimatedUsdt > 0 ? ` (~${formatPrice(b.estimatedUsdt)})` : '';
+      const lockedStr = b.locked > 0 ? ` <i>[🔒 ${b.locked.toFixed(4)}]</i>` : '';
+      msg += `• <b>${b.asset}:</b> <code>${freeStr}</code>${estStr}${lockedStr}\n`;
+    }
+    msg += `\n`;
+  }
+
+  msg += `⏱ <i>Diperbarui pada: ${timeStr}</i>`;
+  return msg.trim();
+}
+
+/**
+ * Formats guide and connection instructions for /connect
+ */
+export function formatConnectInstructionsMessage(
+  hasConnected: boolean = false,
+  maskedApiKey?: string
+): string {
+  if (hasConnected) {
+    return `🔗 <b>STATUS KONEKSI BINANCE</b>
+
+Akun Binance Anda saat ini <b>TERHUBUNG</b>:
+🔑 API Key: <code>${escapeHtml(maskedApiKey || '****')}</code>
+🟢 Siap untuk cek portofolio (/balance) dan 1-Click Order.
+
+💡 <b>Pilihan Tindakan:</b>
+• Ketik /balance untuk cek saldo live.
+• Ketik /disconnect jika ingin memutuskan sambungan akun.`;
+  }
+
+  return `🔗 <b>HUBUNGKAN AKUN BINANCE (API KEY)</b>
+
+Hubungkan akun Binance Anda untuk mengaktifkan fitur <b>Cek Portofolio (/balance)</b> dan <b>1-Click Spot Buy</b> langsung dari bot!
+
+📋 <b>Langkah Mudah Membuat API Key di Binance:</b>
+1. Buka aplikasi / website Binance, masuk ke menu <b>Profile ➔ API Management</b>.
+2. Klik <b>Create API</b> (pilih <i>System generated</i>).
+3. Beri label, contoh: <code>SpotSignalBot</code>.
+4. Pada bagian <b>API Restrictions</b>:
+   ✅ Centang <b>Enable Reading</b> (untuk cek saldo)
+   ✅ Centang <b>Enable Spot &amp; Margin Trading</b> (untuk beli koin via bot)
+   ❌ <b>JANGAN CENTANG "Enable Withdrawals"</b> (demi keamanan dana Anda!)
+5. Salin <b>API Key</b> dan <b>Secret Key</b> yang muncul.
+
+🔒 <b>Keamanan Terjamin:</b>
+• Kredensial dienkripsi dengan standar militer <b>AES-256-GCM</b>.
+• Pesan yang Anda kirimkan berisi API Key akan <b>langsung dihapus otomatis</b> dari riwayat chat.
+• Bot TIDAK MEMILIKI dan TIDAK MEMBUTUHKAN izin penarikan (Withdrawal).
+
+👉 <b>Klik tombol di bawah atau ketik /connect untuk mulai!</b>`;
+}
+
+/**
+ * Formats 1-Click Buy Confirmation Message
+ */
+export function formatBuyConfirmMessage(
+  symbol: string,
+  usdtAmount: number,
+  currentPrice: number,
+  freeUsdt: number
+): string {
+  const pair = formatSymbolDisplay(symbol);
+  const estCoins = currentPrice > 0 ? (usdtAmount / currentPrice).toFixed(6) : '0';
+
+  return `🛒 <b>KONFIRMASI PEMBELIAN SPOT</b>
+
+Pair: <b>${pair}</b>
+Tipe Order: <b>Market Order (Instant Fill)</b>
+💰 Nominal Beli: <b>$${usdtAmount.toFixed(2)} USDT</b>
+📈 Harga Pasar Saat Ini: <b>${formatPrice(currentPrice)}</b>
+🪙 Estimasi Koin Didapat: ~<b>${estCoins} ${symbol.replace('USDT', '')}</b>
+
+💵 Saldo USDT Anda: <b>$${freeUsdt.toFixed(2)} USDT</b>
+
+⚠️ <i>Order akan langsung dieksekusi di akun Binance Spot Anda dengan harga pasar terbaik saat ini.</i>`;
+}
+
+/**
+ * Formats order execution receipt
+ */
+export function formatOrderReceiptMessage(result: OrderExecutionResult): string {
+  const pair = formatSymbolDisplay(result.symbol);
+  const coin = result.symbol.replace('USDT', '');
+  const d = new Date(result.transactTime || Date.now());
+  const pad = (n: number) => n.toString().padStart(2, '0');
+  const timeStr = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())} WIB`;
+
+  return `🎉 <b>ORDER BELI SPOT BERHASIL!</b> 🚀
+
+Pair: <b>${pair}</b>
+Status: <b>${result.status} (FILLED)</b>
+🆔 Order ID: <code>#${result.orderId}</code>
+
+💰 Total USDT Dibelanjakan: <b>$${result.cummulativeQuoteQty.toFixed(2)} USDT</b>
+🪙 Koin Didapat: <b>${result.executedQty} ${coin}</b>
+📈 Rata-rata Harga Fill: <b>${formatPrice(result.avgPrice)}</b>
+
+⏱ <i>Waktu Eksekusi: ${timeStr}</i>
+
+💡 <i>Klik tombol di bawah untuk langsung memasang <b>Notice Me</b> agar bot memantau Take Profit &amp; Stop Loss untuk posisi ini!</i>`;
 }
 

@@ -22,11 +22,16 @@ import {
   formatNewUserRequestMessage,
   formatWaitingApprovalMessage,
   formatUserApprovedNotification,
-  formatUserRejectedNotification
+  formatUserRejectedNotification,
+  formatBinanceBalanceMessage,
+  formatConnectInstructionsMessage,
+  formatBuyConfirmMessage,
+  formatOrderReceiptMessage
 } from './formatter.js';
 import { SignalResult } from '../strategy/signal.js';
 import { TradeWatcherService } from '../watcher/tradeWatcher.js';
 import { UserManager } from '../user/userManager.js';
+import { BinanceTradingClient } from '../exchange/binanceTrade.js';
 
 export interface TelegramBotHandlers {
   onScanAll: (timeframe?: string) => Promise<SignalResult[]>;
@@ -59,8 +64,22 @@ const RESERVED_COMMANDS = new Set([
   'users',
   'approve',
   'reject',
-  'broadcast'
+  'broadcast',
+  'balance',
+  'portfolio',
+  'saldo',
+  'connect',
+  'binance',
+  'disconnect',
+  'logout',
+  'cancel'
 ]);
+
+export interface UserSessionState {
+  step: 'AWAITING_API_KEY' | 'AWAITING_API_SECRET' | 'AWAITING_CUSTOM_BUY_AMOUNT';
+  apiKey?: string;
+  buySymbol?: string;
+}
 
 export class TelegramBotService {
   private bot: Telegraf;
@@ -68,12 +87,15 @@ export class TelegramBotService {
   private handlers?: TelegramBotHandlers;
   private watcherService?: TradeWatcherService;
   private userManager: UserManager;
+  private tradingClient: BinanceTradingClient;
+  private userSessionStates: Map<string, UserSessionState> = new Map();
   private isRunning = false;
 
   constructor(config: AppConfig, userManager?: UserManager) {
     this.config = config;
     this.bot = new Telegraf(config.telegram.token);
     this.userManager = userManager || new UserManager(config.telegram.adminChatId);
+    this.tradingClient = new BinanceTradingClient(config.exchange.baseUrl);
   }
 
   /**
@@ -97,6 +119,7 @@ export class TelegramBotService {
     const buttons = [
       ['🔍 Screener (/find)', '⚡ Scalp Radar (/scalp)'],
       ['🎯 Daily Entry (/daily)', '📋 Watchers (/watchers)'],
+      ['💰 Saldo Binance (/balance)', '🔗 Akun Binance (/connect)'],
       ['📊 Scan Watchlist (/scan)', 'ℹ️ Help & Status (/help)']
     ];
 
@@ -119,6 +142,10 @@ export class TelegramBotService {
       [
         Markup.button.callback('🎯 Daily Entry (/daily)', 'menu:daily'),
         Markup.button.callback('📋 Watchers (/watchers)', 'menu:watchers')
+      ],
+      [
+        Markup.button.callback('💰 Saldo Binance (/balance)', 'menu:balance'),
+        Markup.button.callback('🔗 Akun Binance (/connect)', 'menu:connect')
       ],
       [
         Markup.button.callback('📊 Scan Watchlist (/scan)', 'menu:scan'),
@@ -451,11 +478,109 @@ export class TelegramBotService {
       }
     };
 
+    const handleBalance = async (ctx: any) => {
+      try {
+        const chatId = ctx.chat?.id?.toString() || '';
+        const creds = this.userManager.getBinanceCredentials(chatId);
+        if (!creds) {
+          const text = `⚠️ <b>AKUN BINANCE BELUM TERHUBUNG</b>\n\n` +
+            `Anda belum menghubungkan API Key Binance ke akun Telegram ini.\n\n` +
+            `💡 <i>Ketik /connect atau klik tombol di bawah untuk menghubungkan akun Binance Anda dengan aman (terenkripsi AES-256).</i>`;
+          await ctx.reply(text, {
+            parse_mode: 'HTML',
+            ...Markup.inlineKeyboard([
+              [Markup.button.callback('🔗 Hubungkan Akun Binance', 'connect:start')]
+            ])
+          });
+          return;
+        }
+
+        const waitMsg = await ctx.reply('⏳ <i>Mengambil saldo Spot wallet Binance Anda...</i>', { parse_mode: 'HTML' });
+
+        const info = await this.tradingClient.getAccountBalances(creds.apiKey, creds.apiSecret);
+        const text = formatBinanceBalanceMessage(info, creds.maskedApiKey);
+
+        await ctx.deleteMessage(waitMsg.message_id).catch(() => {});
+        await ctx.reply(text, {
+          parse_mode: 'HTML',
+          ...Markup.inlineKeyboard([
+            [
+              Markup.button.callback('🔄 Refresh Saldo', 'menu:balance'),
+              Markup.button.callback('⚙️ Status Akun', 'menu:connect')
+            ]
+          ])
+        });
+      } catch (err) {
+        logger.error(`Error handling /balance: ${(err as Error).message}`);
+        await ctx.reply(`❌ Gagal mengambil saldo: ${escapeHtml((err as Error).message)}`);
+      }
+    };
+
+    const handleConnect = async (ctx: any) => {
+      try {
+        const chatId = ctx.chat?.id?.toString() || '';
+        const hasConnected = this.userManager.hasBinance(chatId);
+        const maskedKey = this.userManager.getMaskedBinanceApiKey(chatId) || undefined;
+
+        if (hasConnected) {
+          const text = formatConnectInstructionsMessage(true, maskedKey);
+          await ctx.reply(text, {
+            parse_mode: 'HTML',
+            ...Markup.inlineKeyboard([
+              [Markup.button.callback('💰 Cek Saldo (/balance)', 'menu:balance')],
+              [Markup.button.callback('🔄 Ganti API Key', 'connect:start')],
+              [Markup.button.callback('❌ Putuskan Sambungan', 'connect:disconnect')]
+            ])
+          });
+          return;
+        }
+
+        const text = formatConnectInstructionsMessage(false);
+        await ctx.reply(text, {
+          parse_mode: 'HTML',
+          ...Markup.inlineKeyboard([
+            [Markup.button.callback('🚀 Hubungkan Sekarang', 'connect:start')]
+          ])
+        });
+      } catch (err) {
+        logger.error(`Error handling /connect: ${(err as Error).message}`);
+      }
+    };
+
+    const handleDisconnect = async (ctx: any) => {
+      try {
+        const chatId = ctx.chat?.id?.toString() || '';
+        const removed = this.userManager.removeBinanceCredentials(chatId);
+        if (removed) {
+          await ctx.reply(
+            `✅ <b>AKUN BINANCE BERHASIL DIPUTUSKAN</b>\n\nKredensial API Key Anda telah dihapus secara permanen dari sistem.`,
+            { parse_mode: 'HTML' }
+          );
+        } else {
+          await ctx.reply('ℹ️ Tidak ada akun Binance yang terhubung saat ini.');
+        }
+      } catch (err) {
+        logger.error(`Error handling /disconnect: ${(err as Error).message}`);
+      }
+    };
+
     // 2. Register bot commands
     this.bot.command('start', handleStart);
     this.bot.command('help', handleHelp);
     this.bot.command('status', handleStatus);
     this.bot.command('menu', handleMenu);
+    this.bot.command(['balance', 'portfolio', 'saldo'], handleBalance);
+    this.bot.command(['connect', 'binance', 'login'], handleConnect);
+    this.bot.command(['disconnect', 'logout'], handleDisconnect);
+    this.bot.command('cancel', async (ctx) => {
+      const chatId = ctx.chat?.id?.toString() || '';
+      if (this.userSessionStates.has(chatId)) {
+        this.userSessionStates.delete(chatId);
+        await ctx.reply('✅ Tindakan berhasil dibatalkan.');
+      } else {
+        await ctx.reply('ℹ️ Tidak ada proses yang sedang berjalan.');
+      }
+    });
 
     this.bot.command(['screener', 'find', 'signals'], async (ctx) => {
       const parts = ctx.message.text.trim().split(/\s+/);
@@ -541,9 +666,12 @@ export class TelegramBotService {
         const result = await this.handlers.onScanSymbol(cleanSymbol, tf);
         const text = formatSingleAnalysisMessage(result);
 
-        // Attach "Notice Me" action button
+        // Attach "Notice Me" and "Beli Spot" action buttons
         const inlineKeyboard = Markup.inlineKeyboard([
-          [Markup.button.callback('🔔 Notice Me (Pantau Otomatis)', `notice:${result.symbol}:${result.timeframe}`)]
+          [
+            Markup.button.callback('🔔 Notice Me (Pantau)', `notice:${result.symbol}:${result.timeframe}`),
+            Markup.button.callback('🛒 Beli Spot', `buy:${result.symbol}`)
+          ]
         ]);
 
         try {
@@ -683,6 +811,203 @@ export class TelegramBotService {
     this.bot.action('menu:admin', async (ctx) => {
       await ctx.answerCbQuery().catch(() => {});
       await handleAdminMenu(ctx);
+    });
+
+    this.bot.action('menu:balance', async (ctx) => {
+      await ctx.answerCbQuery().catch(() => {});
+      await handleBalance(ctx);
+    });
+
+    this.bot.action('menu:connect', async (ctx) => {
+      await ctx.answerCbQuery().catch(() => {});
+      await handleConnect(ctx);
+    });
+
+    this.bot.action('connect:start', async (ctx) => {
+      await ctx.answerCbQuery().catch(() => {});
+      const chatId = ctx.chat?.id?.toString() || '';
+      this.userSessionStates.set(chatId, { step: 'AWAITING_API_KEY' });
+      await ctx.reply(
+        `🔑 <b>LANGKAH 1/2: Masukkan API Key Binance</b>\n\n` +
+        `Silakan kirimkan (paste) <b>API Key</b> akun Binance Anda ke chat ini.\n\n` +
+        `🔒 <i>Pesan Anda akan otomatis langsung dihapus oleh bot demi keamanan riwayat chat.</i>\n` +
+        `💡 <i>Ketik /cancel kapan saja jika ingin membatalkan.</i>`,
+        { parse_mode: 'HTML' }
+      );
+    });
+
+    this.bot.action('connect:disconnect', async (ctx) => {
+      await ctx.answerCbQuery().catch(() => {});
+      await handleDisconnect(ctx);
+    });
+
+    // 1-Click Buy Actions
+    this.bot.action(/^buy:([A-Z0-9]+)$/i, async (ctx) => {
+      try {
+        const symbol = ctx.match[1].toUpperCase();
+        const chatId = ctx.chat?.id?.toString() || '';
+
+        const creds = this.userManager.getBinanceCredentials(chatId);
+        if (!creds) {
+          await ctx.answerCbQuery('⚠️ Akun Binance belum terhubung.');
+          await ctx.reply(
+            `⚠️ <b>AKUN BINANCE BELUM TERHUBUNG</b>\n\n` +
+            `Untuk mengeksekusi pembelian 1-Click Spot untuk <b>${formatSymbolDisplay(symbol)}</b>, silakan hubungkan API Key Binance Anda terlebih dahulu.`,
+            {
+              parse_mode: 'HTML',
+              ...Markup.inlineKeyboard([
+                [Markup.button.callback('🔗 Hubungkan Akun Sekarang', 'connect:start')]
+              ])
+            }
+          );
+          return;
+        }
+
+        if (!creds.canTrade) {
+          await ctx.answerCbQuery('⚠️ Izin trading tidak aktif di API Key Anda.');
+          await ctx.reply(
+            `⚠️ <b>IZIN TRADING TIDAK AKTIF</b>\n\n` +
+            `API Key Anda saat ini dalam mode <i>Read-Only</i>. Pastikan Anda mencentang opsi <b>Enable Spot &amp; Margin Trading</b> pada menu API Management di Binance.`,
+            { parse_mode: 'HTML' }
+          );
+          return;
+        }
+
+        await ctx.answerCbQuery();
+
+        let freeUsdt = 0;
+        try {
+          const accInfo = await this.tradingClient.getAccountBalances(creds.apiKey, creds.apiSecret);
+          const usdtItem = accInfo.balances.find(b => b.asset === 'USDT');
+          freeUsdt = usdtItem ? usdtItem.free : 0;
+        } catch {}
+
+        const text = `🛒 <b>PILIH NOMINAL BELI SPOT: ${formatSymbolDisplay(symbol)}</b>\n\n` +
+          `💵 Saldo USDT Tersedia: <b>$${freeUsdt.toFixed(2)} USDT</b>\n` +
+          `Pilih nominal USDT yang ingin dibelanjakan:`;
+
+        await ctx.reply(text, {
+          parse_mode: 'HTML',
+          ...Markup.inlineKeyboard([
+            [
+              Markup.button.callback('💵 10 USDT', `buy_amt:${symbol}:10`),
+              Markup.button.callback('💵 25 USDT', `buy_amt:${symbol}:25`)
+            ],
+            [
+              Markup.button.callback('💵 50 USDT', `buy_amt:${symbol}:50`),
+              Markup.button.callback('💵 100 USDT', `buy_amt:${symbol}:100`)
+            ],
+            [
+              Markup.button.callback('✏️ Nominal Kustom', `buy_amt:${symbol}:custom`),
+              Markup.button.callback('❌ Batal', 'buy:cancel')
+            ]
+          ])
+        });
+      } catch (err) {
+        logger.error(`Error in buy action: ${(err as Error).message}`);
+        await ctx.answerCbQuery('❌ Gagal memproses order.').catch(() => {});
+      }
+    });
+
+    this.bot.action(/^buy_amt:([A-Z0-9]+):([0-9.]+|custom)$/i, async (ctx) => {
+      try {
+        const symbol = ctx.match[1].toUpperCase();
+        const amtStr = ctx.match[2];
+        const chatId = ctx.chat?.id?.toString() || '';
+
+        await ctx.answerCbQuery().catch(() => {});
+
+        if (amtStr === 'custom') {
+          this.userSessionStates.set(chatId, {
+            step: 'AWAITING_CUSTOM_BUY_AMOUNT',
+            buySymbol: symbol
+          });
+          await ctx.reply(
+            `✏️ <b>Ketik nominal USDT yang ingin dibeli untuk ${formatSymbolDisplay(symbol)}:</b>\n\n` +
+            `Contoh: ketik <code>15</code> atau <code>75</code> (minimal $5.00 USDT).\n` +
+            `💡 <i>Ketik /cancel untuk membatalkan.</i>`,
+            { parse_mode: 'HTML' }
+          );
+          return;
+        }
+
+        const usdtAmount = parseFloat(amtStr);
+        if (isNaN(usdtAmount) || usdtAmount < 5) {
+          await ctx.reply('❌ Nominal pembelian minimal $5.00 USDT.');
+          return;
+        }
+
+        const creds = this.userManager.getBinanceCredentials(chatId);
+        if (!creds) return;
+
+        let currentPrice = 0;
+        let freeUsdt = 0;
+        try {
+          if (this.handlers) {
+            const scanRes = await this.handlers.onScanSymbol(symbol);
+            currentPrice = scanRes.entryPrice;
+          }
+          const accInfo = await this.tradingClient.getAccountBalances(creds.apiKey, creds.apiSecret);
+          const usdtItem = accInfo.balances.find(b => b.asset === 'USDT');
+          freeUsdt = usdtItem ? usdtItem.free : 0;
+        } catch {}
+
+        const confirmMsg = formatBuyConfirmMessage(symbol, usdtAmount, currentPrice, freeUsdt);
+        await ctx.reply(confirmMsg, {
+          parse_mode: 'HTML',
+          ...Markup.inlineKeyboard([
+            [
+              Markup.button.callback('✅ Ya, Eksekusi Beli', `buy_confirm:${symbol}:${usdtAmount}`),
+              Markup.button.callback('❌ Batalkan', 'buy:cancel')
+            ]
+          ])
+        });
+      } catch (err) {
+        logger.error(`Error in buy_amt action: ${(err as Error).message}`);
+      }
+    });
+
+    this.bot.action(/^buy_confirm:([A-Z0-9]+):([0-9.]+)$/i, async (ctx) => {
+      try {
+        const symbol = ctx.match[1].toUpperCase();
+        const usdtAmount = parseFloat(ctx.match[2]);
+        const chatId = ctx.chat?.id?.toString() || '';
+
+        await ctx.answerCbQuery('⏳ Mengeksekusi order di Binance...').catch(() => {});
+
+        const creds = this.userManager.getBinanceCredentials(chatId);
+        if (!creds) {
+          await ctx.reply('❌ Kredensial Binance tidak ditemukan. Silakan hubungkan ulang via /connect.');
+          return;
+        }
+
+        const waitMsg = await ctx.reply(`⏳ <i>Mengirim Market Order $${usdtAmount.toFixed(2)} USDT ke Binance Spot...</i>`, { parse_mode: 'HTML' });
+
+        const orderResult = await this.tradingClient.executeMarketBuy(
+          creds.apiKey,
+          creds.apiSecret,
+          symbol,
+          usdtAmount
+        );
+
+        await ctx.deleteMessage(waitMsg.message_id).catch(() => {});
+
+        const receiptMsg = formatOrderReceiptMessage(orderResult);
+        await ctx.reply(receiptMsg, {
+          parse_mode: 'HTML',
+          ...Markup.inlineKeyboard([
+            [Markup.button.callback('🔔 Pasang Pantauan TP/SL (Notice Me)', `notice:${symbol}:15m`)]
+          ])
+        });
+      } catch (err) {
+        logger.error(`Error executing buy order: ${(err as Error).message}`);
+        await ctx.reply(`❌ <b>Eksekusi Order Gagal!</b>\n\nAlasan: ${escapeHtml((err as Error).message)}`, { parse_mode: 'HTML' });
+      }
+    });
+
+    this.bot.action('buy:cancel', async (ctx) => {
+      await ctx.answerCbQuery('❌ Pembelian dibatalkan.').catch(() => {});
+      await ctx.reply('❌ Pembelian spot telah dibatalkan.');
     });
 
     // 4. Admin Menu & User Management Callbacks
@@ -1074,9 +1399,131 @@ export class TelegramBotService {
       });
     });
 
-    // 6. Text Message listener: Keyboard menu buttons & Dynamic Coin tickers
+    // 6. Text Message listener: Keyboard menu buttons, interactive wizards & Dynamic Coin tickers
     this.bot.on('text', async (ctx, next) => {
       const rawText = ctx.message.text.trim();
+      const chatId = ctx.chat?.id?.toString() || '';
+
+      // Check active interactive session states (connecting Binance or Custom buy amount)
+      const session = this.userSessionStates.get(chatId);
+      if (session) {
+        if (rawText.toLowerCase() === '/cancel') {
+          this.userSessionStates.delete(chatId);
+          await ctx.reply('✅ Tindakan berhasil dibatalkan.');
+          return;
+        }
+
+        if (session.step === 'AWAITING_API_KEY') {
+          // Immediately delete user message containing API key
+          await ctx.deleteMessage().catch(() => {});
+          const apiKey = rawText.trim();
+          if (apiKey.length < 16) {
+            await ctx.reply('⚠️ Format API Key tampak terlalu pendek. Silakan salin & kirimkan kembali API Key Binance Anda (atau ketik /cancel):');
+            return;
+          }
+
+          this.userSessionStates.set(chatId, {
+            step: 'AWAITING_API_SECRET',
+            apiKey
+          });
+
+          await ctx.reply(
+            `🔐 <b>LANGKAH 2/2: Masukkan Secret Key Binance</b>\n\n` +
+            `✅ API Key berhasil diterima!\n` +
+            `Sekarang kirimkan (paste) <b>Secret Key</b> akun Binance Anda ke chat ini.\n\n` +
+            `🔒 <i>Pesan Anda akan otomatis langsung dihapus oleh bot demi keamanan riwayat chat.</i>\n` +
+            `💡 <i>Ketik /cancel untuk membatalkan.</i>`,
+            { parse_mode: 'HTML' }
+          );
+          return;
+        }
+
+        if (session.step === 'AWAITING_API_SECRET') {
+          // Immediately delete user message containing API secret
+          await ctx.deleteMessage().catch(() => {});
+          const apiSecret = rawText.trim();
+          const apiKey = session.apiKey || '';
+          this.userSessionStates.delete(chatId);
+
+          const waitMsg = await ctx.reply('⏳ <i>Memverifikasi API Key & Secret ke Binance...</i>', { parse_mode: 'HTML' });
+
+          const testRes = await this.tradingClient.testCredentials(apiKey, apiSecret);
+          await ctx.deleteMessage(waitMsg.message_id).catch(() => {});
+
+          if (testRes.success) {
+            this.userManager.setBinanceCredentials(chatId, apiKey, apiSecret, testRes.canTrade);
+            const maskedKey = `${apiKey.substring(0, 4)}...${apiKey.substring(apiKey.length - 4)}`;
+            const statusMode = testRes.canTrade ? '🟢 Spot Trading Aktif (Bisa Cek Saldo & 1-Click Buy)' : '🟡 Read-Only (Hanya Cek Saldo)';
+
+            await ctx.reply(
+              `🎉 <b>AKUN BINANCE BERHASIL TERHUBUNG!</b> 🚀\n\n` +
+              `🔑 API Key: <code>${maskedKey}</code>\n` +
+              `⚡ Mode: <b>${statusMode}</b>\n\n` +
+              `🔒 Kredensial telah diamankan dengan enkripsi standar militer <b>AES-256-GCM</b>.\n\n` +
+              `Ketik /balance untuk melihat saldo dan portofolio Anda sekarang!`,
+              {
+                parse_mode: 'HTML',
+                ...Markup.inlineKeyboard([
+                  [Markup.button.callback('💰 Cek Saldo Sekarang', 'menu:balance')]
+                ])
+              }
+            );
+          } else {
+            await ctx.reply(
+              `❌ <b>VERIFIKASI AKUN GAGAL!</b>\n\n` +
+              `Binance menolak kredensial tersebut:\n` +
+              `<i>${escapeHtml(testRes.error || 'Invalid API-key, IP, or permissions')}</i>\n\n` +
+              `💡 <i>Pastikan API Key & Secret disalin dengan benar tanpa spasi tambahan, dan IP Access Restriction tidak memblokir server.</i>\n\n` +
+              `Ketik /connect jika ingin mencoba kembali.`,
+              { parse_mode: 'HTML' }
+            );
+          }
+          return;
+        }
+
+        if (session.step === 'AWAITING_CUSTOM_BUY_AMOUNT' && session.buySymbol) {
+          const buySymbol = session.buySymbol;
+          this.userSessionStates.delete(chatId);
+
+          const cleanedAmount = rawText.replace(/[^0-9.]/g, '');
+          const usdtAmount = parseFloat(cleanedAmount);
+
+          if (isNaN(usdtAmount) || usdtAmount < 5) {
+            await ctx.reply('❌ Nominal tidak valid atau kurang dari minimal $5.00 USDT. Pembelian dibatalkan.');
+            return;
+          }
+
+          const creds = this.userManager.getBinanceCredentials(chatId);
+          if (!creds) {
+            await ctx.reply('❌ Akun Binance belum terhubung.');
+            return;
+          }
+
+          let currentPrice = 0;
+          let freeUsdt = 0;
+          try {
+            if (this.handlers) {
+              const scanRes = await this.handlers.onScanSymbol(buySymbol);
+              currentPrice = scanRes.entryPrice;
+            }
+            const accInfo = await this.tradingClient.getAccountBalances(creds.apiKey, creds.apiSecret);
+            const usdtItem = accInfo.balances.find(b => b.asset === 'USDT');
+            freeUsdt = usdtItem ? usdtItem.free : 0;
+          } catch {}
+
+          const confirmMsg = formatBuyConfirmMessage(buySymbol, usdtAmount, currentPrice, freeUsdt);
+          await ctx.reply(confirmMsg, {
+            parse_mode: 'HTML',
+            ...Markup.inlineKeyboard([
+              [
+                Markup.button.callback('✅ Ya, Eksekusi Beli', `buy_confirm:${buySymbol}:${usdtAmount}`),
+                Markup.button.callback('❌ Batalkan', 'buy:cancel')
+              ]
+            ])
+          });
+          return;
+        }
+      }
 
       // Check persistent Reply Keyboard button presses:
       if (/^🔍.*(screener|find)/i.test(rawText) || rawText === '🔍 Screener (/find)') {
@@ -1093,6 +1540,14 @@ export class TelegramBotService {
       }
       if (/^📋.*watcher/i.test(rawText) || rawText === '📋 Watchers (/watchers)') {
         await handleWatchers(ctx);
+        return;
+      }
+      if (/^💰.*(balance|saldo)/i.test(rawText) || rawText === '💰 Saldo Binance (/balance)') {
+        await handleBalance(ctx);
+        return;
+      }
+      if (/^🔗.*(connect|akun)/i.test(rawText) || rawText === '🔗 Akun Binance (/connect)') {
+        await handleConnect(ctx);
         return;
       }
       if (/^📊.*scan/i.test(rawText) || rawText === '📊 Scan Watchlist (/scan)') {
@@ -1163,6 +1618,8 @@ export class TelegramBotService {
           { command: 'find', description: '🔍 Screener 30 pair teraktif di Binance' },
           { command: 'scalp', description: '⚡ Scalping radar momentum (15m/30m)' },
           { command: 'daily', description: '🎯 Rekomendasi entry trading harian (1h)' },
+          { command: 'balance', description: '💰 Cek saldo & portofolio spot Binance' },
+          { command: 'connect', description: '🔗 Hubungkan akun Binance (API Key)' },
           { command: 'watchers', description: '📋 Pantauan live trade aktif (TP/SL)' },
           { command: 'scan', description: '📊 Scan watchlist pair' },
           { command: 'status', description: '⚙️ Status operasional & scanner bot' },
@@ -1217,7 +1674,10 @@ export class TelegramBotService {
   public async sendBuySignalAlert(result: SignalResult): Promise<boolean> {
     const message = formatBuySignalMessage(result);
     const inlineKeyboard = Markup.inlineKeyboard([
-      [Markup.button.callback('🔔 Notice Me (Pantau Otomatis)', `notice:${result.symbol}:${result.timeframe}`)]
+      [
+        Markup.button.callback('🔔 Notice Me (Pantau)', `notice:${result.symbol}:${result.timeframe}`),
+        Markup.button.callback('🛒 Beli Spot', `buy:${result.symbol}`)
+      ]
     ]);
 
     const approvedUsers = this.userManager.getApprovedUsers();

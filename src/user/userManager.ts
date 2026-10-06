@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { logger } from '../utils/logger.js';
+import { encryptString, decryptString } from '../utils/crypto.js';
 
 export type UserStatus = 'pending' | 'approved' | 'rejected' | 'blocked';
 export type UserRole = 'admin' | 'user';
@@ -9,6 +10,18 @@ export interface BotUserProfile {
   username?: string;
   firstName?: string;
   lastName?: string;
+}
+
+export interface BinanceAccountData {
+  encryptedApiKey: string;
+  apiKeyIv: string;
+  apiKeyTag: string;
+  encryptedApiSecret: string;
+  apiSecretIv: string;
+  apiSecretTag: string;
+  canTrade: boolean;
+  maskedApiKey: string;
+  connectedAt: string;
 }
 
 export interface BotUser {
@@ -23,6 +36,7 @@ export interface BotUser {
   approvedAt?: string;
   rejectedAt?: string;
   lastActiveAt?: string;
+  binance?: BinanceAccountData;
 }
 
 export interface UsersDatabase {
@@ -362,5 +376,125 @@ export class UserManager {
       rejected,
       blocked
     };
+  }
+
+  /**
+   * Check if user has connected a Binance account
+   */
+  public hasBinance(chatId: string): boolean {
+    const user = this.users.get(chatId.trim());
+    return Boolean(user?.binance?.encryptedApiKey);
+  }
+
+  /**
+   * Get user's masked Binance API key for display
+   */
+  public getMaskedBinanceApiKey(chatId: string): string | null {
+    const user = this.users.get(chatId.trim());
+    return user?.binance?.maskedApiKey || null;
+  }
+
+  /**
+   * Save or update encrypted Binance API credentials for a user
+   */
+  public setBinanceCredentials(
+    chatId: string,
+    apiKey: string,
+    apiSecret: string,
+    canTrade: boolean
+  ): void {
+    const cleanId = chatId.trim();
+    let user = this.users.get(cleanId);
+    const now = new Date().toISOString();
+
+    if (!user) {
+      user = {
+        id: cleanId,
+        role: this.isAdmin(cleanId) ? 'admin' : 'user',
+        status: this.isAdmin(cleanId) ? 'approved' : 'pending',
+        createdAt: now,
+        updatedAt: now
+      };
+      this.users.set(cleanId, user);
+    }
+
+    const cleanKey = apiKey.trim();
+    const cleanSecret = apiSecret.trim();
+
+    const encKey = encryptString(cleanKey);
+    const encSecret = encryptString(cleanSecret);
+
+    const maskedKey = cleanKey.length >= 8
+      ? `${cleanKey.substring(0, 4)}...${cleanKey.substring(cleanKey.length - 4)}`
+      : '****';
+
+    user.binance = {
+      encryptedApiKey: encKey.encrypted,
+      apiKeyIv: encKey.iv,
+      apiKeyTag: encKey.tag,
+      encryptedApiSecret: encSecret.encrypted,
+      apiSecretIv: encSecret.iv,
+      apiSecretTag: encSecret.tag,
+      canTrade,
+      maskedApiKey: maskedKey,
+      connectedAt: now
+    };
+    user.updatedAt = now;
+
+    this.save();
+    logger.info(`Binance credentials saved for user ${cleanId} (Key: ${maskedKey}, CanTrade: ${canTrade})`);
+  }
+
+  /**
+   * Retrieve and decrypt Binance API credentials for a user
+   */
+  public getBinanceCredentials(chatId: string): {
+    apiKey: string;
+    apiSecret: string;
+    canTrade: boolean;
+    maskedApiKey: string;
+    connectedAt: string;
+  } | null {
+    const user = this.users.get(chatId.trim());
+    if (!user?.binance) return null;
+
+    try {
+      const apiKey = decryptString({
+        encrypted: user.binance.encryptedApiKey,
+        iv: user.binance.apiKeyIv,
+        tag: user.binance.apiKeyTag
+      });
+
+      const apiSecret = decryptString({
+        encrypted: user.binance.encryptedApiSecret,
+        iv: user.binance.apiSecretIv,
+        tag: user.binance.apiSecretTag
+      });
+
+      return {
+        apiKey,
+        apiSecret,
+        canTrade: user.binance.canTrade,
+        maskedApiKey: user.binance.maskedApiKey,
+        connectedAt: user.binance.connectedAt
+      };
+    } catch (err) {
+      logger.error(`Failed to decrypt Binance credentials for user ${chatId}: ${(err as Error).message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Remove Binance credentials for a user
+   */
+  public removeBinanceCredentials(chatId: string): boolean {
+    const user = this.users.get(chatId.trim());
+    if (!user || !user.binance) return false;
+
+    delete user.binance;
+    user.updatedAt = new Date().toISOString();
+    this.save();
+    logger.info(`Binance credentials removed for user ${chatId}`);
+    return true;
   }
 }

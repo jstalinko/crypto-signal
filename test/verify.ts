@@ -439,11 +439,115 @@ async function runTests() {
     throw new Error('Admin watcher was erroneously removed when removing User 1 watcher');
   }
 
-  // Cleanup test files
-  if (fs.existsSync(testUsersFile)) fs.unlinkSync(testUsersFile);
-  if (fs.existsSync(multiWatcherStorage)) fs.unlinkSync(multiWatcherStorage);
+  // Test 12: Binance Crypto Encryption, UserManager Credential Storage, and Formatters
+  console.log('Test 12: Testing AES-256-GCM Encryption & Binance Account Integration...');
+  const { encryptString, decryptString } = await import('../src/utils/crypto.js');
+  const sampleSecret = 'binance_super_secret_key_abcdef123456';
+  const encrypted = encryptString(sampleSecret);
+  console.log(`Sample secret encrypted: iv=${encrypted.iv.length} chars, tag=${encrypted.tag.length} chars, len=${encrypted.encrypted.length}`);
+  if (!encrypted.encrypted || !encrypted.iv || !encrypted.tag) {
+    throw new Error('Encrypted payload missing ciphertext, iv, or tag');
+  }
 
-  console.log('✅ Multi-user Watchers Isolation verified.\n');
+  const decrypted = decryptString(encrypted);
+  if (decrypted !== sampleSecret) {
+    throw new Error(`Decrypted secret mismatch! Expected ${sampleSecret}, got ${decrypted}`);
+  }
+  console.log('✅ AES-256-GCM Encryption & Decryption roundtrip successful.');
+
+  // Test UserManager Binance Credential Storage
+  const testUsersFile2 = path.resolve(process.cwd(), 'data', 'test_users_binance.json');
+  if (fs.existsSync(testUsersFile2)) fs.unlinkSync(testUsersFile2);
+  const userMgr2 = new UserManager('7472742743', testUsersFile2);
+  const testChatId = '999888777';
+  userMgr2.registerOrUpdate(testChatId, { username: 'trader_joe' });
+  userMgr2.approveUser(testChatId);
+
+  const testApiKey = 'vmPUZE6mv9SD5VNHk4HlWFsOr6aKE2zvsw0MuIgwCIPy6utIco14y7Ju91duEh8A';
+  const testApiSecret = 'NhqPtmdSJYdKjVHjClK0MTvxGRsdk10xU0rqmkPxphiqqVMtMFbmKKEd8qDHjl6v';
+
+  userMgr2.setBinanceCredentials(testChatId, testApiKey, testApiSecret, true);
+  if (!userMgr2.hasBinance(testChatId)) {
+    throw new Error('hasBinance should be true after setting credentials');
+  }
+
+  const masked = userMgr2.getMaskedBinanceApiKey(testChatId);
+  console.log(`Masked API Key: ${masked}`);
+  if (!masked || !masked.startsWith('vmPU') || !masked.endsWith('Eh8A')) {
+    throw new Error(`Unexpected masked API key: ${masked}`);
+  }
+
+  // Verify file content is encrypted on disk
+  const rawDiskData = fs.readFileSync(testUsersFile2, 'utf-8');
+  if (rawDiskData.includes(testApiSecret)) {
+    throw new Error('SECURITY VIOLATION: Plaintext API Secret found in storage file!');
+  }
+  console.log('✅ Verified zero plaintext secrets on disk.');
+
+  const retrievedCreds = userMgr2.getBinanceCredentials(testChatId);
+  if (!retrievedCreds || retrievedCreds.apiKey !== testApiKey || retrievedCreds.apiSecret !== testApiSecret) {
+    throw new Error('Retrieved decrypted Binance credentials do not match original');
+  }
+  if (!retrievedCreds.canTrade) {
+    throw new Error('Expected canTrade to be true');
+  }
+
+  userMgr2.removeBinanceCredentials(testChatId);
+  if (userMgr2.hasBinance(testChatId)) {
+    throw new Error('hasBinance should be false after removal');
+  }
+  if (fs.existsSync(testUsersFile2)) fs.unlinkSync(testUsersFile2);
+  console.log('✅ UserManager Binance credential lifecycle verified.');
+
+  // Test Binance Message Formatters
+  const {
+    formatBinanceBalanceMessage,
+    formatConnectInstructionsMessage,
+    formatBuyConfirmMessage,
+    formatOrderReceiptMessage
+  } = await import('../src/telegram/formatter.js');
+
+  const balanceMsg = formatBinanceBalanceMessage({
+    balances: [
+      { asset: 'USDT', free: 250.50, locked: 0, estimatedUsdt: 250.50 },
+      { asset: 'BTC', free: 0.05, locked: 0.001, estimatedUsdt: 3250.00 },
+      { asset: 'SOL', free: 12.35, locked: 0, estimatedUsdt: 1852.50 }
+    ],
+    totalEstimatedUsdt: 5353.00,
+    canTrade: true,
+    updateTime: Date.now()
+  }, 'vmPU...Eh8A');
+  console.log('--- Sample Balance Message ---');
+  console.log(balanceMsg);
+  console.log('------------------------------');
+  validateTelegramHtml(balanceMsg, 'BinanceBalanceMessage');
+
+  const connectMsgDisconnected = formatConnectInstructionsMessage(false);
+  validateTelegramHtml(connectMsgDisconnected, 'ConnectInstructionsDisconnected');
+
+  const connectMsgConnected = formatConnectInstructionsMessage(true, 'vmPU...Eh8A');
+  validateTelegramHtml(connectMsgConnected, 'ConnectInstructionsConnected');
+
+  const buyConfirmMsg = formatBuyConfirmMessage('SOLUSDT', 50, 150.25, 250.50);
+  console.log('--- Sample Buy Confirm Message ---');
+  console.log(buyConfirmMsg);
+  console.log('----------------------------------');
+  validateTelegramHtml(buyConfirmMsg, 'BuyConfirmMessage');
+
+  const orderReceiptMsg = formatOrderReceiptMessage({
+    orderId: 123456789,
+    symbol: 'SOLUSDT',
+    status: 'FILLED',
+    executedQty: 0.332,
+    cummulativeQuoteQty: 49.95,
+    avgPrice: 150.45,
+    transactTime: Date.now()
+  });
+  console.log('--- Sample Order Receipt Message ---');
+  console.log(orderReceiptMsg);
+  console.log('------------------------------------');
+  validateTelegramHtml(orderReceiptMsg, 'OrderReceiptMessage');
+  console.log('✅ Binance Formatters & HTML validation verified.\n');
 
   console.log('🎉 ALL TESTS PASSED SUCCESSFULLY!');
 }
