@@ -504,8 +504,38 @@ async function runTests() {
     formatBinanceBalanceMessage,
     formatConnectInstructionsMessage,
     formatBuyConfirmMessage,
-    formatOrderReceiptMessage
+    formatOrderReceiptMessage,
+    formatBinanceAccountNotLoggedInMessage,
+    formatBinanceAccountLoggedInMessage,
+    formatBinanceApiGuideMessage
   } = await import('../src/telegram/formatter.js');
+
+  const hubNotLoggedInMsg = formatBinanceAccountNotLoggedInMessage();
+  console.log('--- Sample Hub Not Logged In ---');
+  console.log(hubNotLoggedInMsg);
+  console.log('--------------------------------');
+  validateTelegramHtml(hubNotLoggedInMsg, 'BinanceHubNotLoggedIn');
+
+  const hubLoggedInMsg = formatBinanceAccountLoggedInMessage({
+    balances: [
+      { asset: 'USDT', free: 250.50, locked: 0, estimatedUsdt: 250.50 },
+      { asset: 'BTC', free: 0.05, locked: 0.001, estimatedUsdt: 3250.00 },
+      { asset: 'SOL', free: 12.35, locked: 0, estimatedUsdt: 1852.50 }
+    ],
+    totalEstimatedUsdt: 5353.00,
+    canTrade: true,
+    updateTime: Date.now()
+  }, 'vmPU...Eh8A');
+  console.log('--- Sample Hub Logged In ---');
+  console.log(hubLoggedInMsg);
+  console.log('----------------------------');
+  validateTelegramHtml(hubLoggedInMsg, 'BinanceHubLoggedIn');
+
+  const guideMsg = formatBinanceApiGuideMessage();
+  console.log('--- Sample Binance API Guide ---');
+  console.log(guideMsg);
+  console.log('--------------------------------');
+  validateTelegramHtml(guideMsg, 'BinanceApiGuide');
 
   const balanceMsg = formatBinanceBalanceMessage({
     balances: [

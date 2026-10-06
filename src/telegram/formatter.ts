@@ -544,8 +544,7 @@ Bot analisa teknikal spot, scalping radar, rekomendasi trading harian &amp; trad
 • ⚡ <b>Scalp Radar (/scalp)</b> - Radar momentum scalping cepat (15m/30m)
 • 🎯 <b>Daily Entry (/daily)</b> - Rekomendasi sinyal entry trading harian (1h)
 • 📋 <b>Watchers (/watchers)</b> - Daftar live trade yang dipantau (TP/SL)
-• 💰 <b>Saldo Binance (/balance)</b> - Cek portofolio Spot &amp; saldo akun Binance
-• 🔗 <b>Akun Binance (/connect)</b> - Hubungkan API Key Binance untuk 1-Click Order
+• 💼 <b>Akun Binance</b> - Portofolio saldo Spot &amp; 1-Click Order
 • 📊 <b>Scan Watchlist (/scan)</b> - Scan koin di watchlist konfigurasi
 • ℹ️ <b>Help &amp; Status (/help)</b> - Panduan lengkap &amp; status bot
 
@@ -553,9 +552,7 @@ Bot analisa teknikal spot, scalping radar, rekomendasi trading harian &amp; trad
 • /daily - Dapatkan rekomendasi entry trading harian
 • /find atau /screener - Scan 30 koin volume tertinggi
 • /scalp [15m|30m] - Radar scalping cepat
-• /balance - Cek portofolio &amp; saldo live akun Binance
-• /connect - Hubungkan akun Binance Anda dengan aman
-• /disconnect - Putuskan sambungan akun Binance
+• /binance atau /account - Menu Akun Binance, profil &amp; saldo
 • /watchers - Cek status posisi live yang sedang dipantau
 • /analyze &lt;coin&gt; [tf] - Analisa koin apapun di Binance (contoh: <code>/analyze SUI</code> atau <code>/analyze SOL 1h</code>)
 • /&lt;coin&gt; - Shortcut cepat analisa koin (contoh: /btc, /eth, /sol, /near, /sui, /doge)
@@ -579,9 +576,7 @@ Gunakan keyboard tombol di bawah layar atau perintah slash berikut:
 • /find atau /screener - Scan 30 koin volume tertinggi di Binance, filter setup entry BUY &amp; WATCH.
 • /scalp [15m|30m] - Radar scalping cepat mencari momentum entry jangka pendek (15-30 menit).
 • /daily - Dapatkan rekomendasi entry trading harian dengan level Entry, TP1, TP2, dan SL terperinci.
-• /balance - Cek portofolio &amp; saldo live Spot Wallet Binance Anda.
-• /connect - Hubungkan akun Binance Anda menggunakan API Key (terenkripsi AES-256).
-• /disconnect - Putuskan sambungan dan hapus kredensial API Binance.
+• /binance atau /account - Menu Akun Binance: cek portofolio live, hubungkan API Key, atau putuskan akun.
 • /watchers - Melihat daftar trade yang sedang dipantau live oleh bot.
 • /scan - Scan pair yang ada di daftar watchlist konfigurasi.
 • /menu - Membuka menu navigasi tombol interaktif.
@@ -886,4 +881,88 @@ Status: <b>${result.status} (FILLED)</b>
 
 💡 <i>Klik tombol di bawah untuk langsung memasang <b>Notice Me</b> agar bot memantau Take Profit &amp; Stop Loss untuk posisi ini!</i>`;
 }
+
+/**
+ * Formats Binance Hub view when user is NOT logged in
+ */
+export function formatBinanceAccountNotLoggedInMessage(): string {
+  return `💼 <b>AKUN BINANCE</b>
+
+👤 <b>Status Akun:</b> ⚪ <b>Belum Terhubung</b>
+
+Hubungkan akun Binance Anda untuk mengaktifkan:
+• 💰 <b>Cek Portofolio &amp; Saldo Spot</b> real-time di Telegram
+• 🛒 <b>1-Click Spot Buy</b> langsung dari sinyal rekomendasi bot
+• 🔔 <b>Notice Me &amp; Trade Watcher</b> pantau target TP/SL otomatis
+
+🔒 <b>Keamanan &amp; Privasi Terjamin:</b>
+• Kredensial dienkripsi standar militer <b>AES-256-GCM</b> di disk lokal.
+• Pesan teks API Key &amp; Secret yang Anda kirim akan <b>otomatis langsung dihapus</b> demi privasi.
+• Cukup izin <i>Reading</i> &amp; <i>Spot Trading</i>. <b>JANGAN PERNAH aktifkan izin Penarikan (Withdrawals)!</b>
+
+👉 <i>Silakan klik tombol di bawah untuk menghubungkan akun atau membaca panduan cara membuat API Key.</i>`;
+}
+
+/**
+ * Formats Binance Hub view when user IS logged in (Profile & Portfolio)
+ */
+export function formatBinanceAccountLoggedInMessage(
+  info: AccountBalanceInfo,
+  maskedApiKey: string
+): string {
+  const pad = (n: number) => n.toString().padStart(2, '0');
+  const d = new Date(info.updateTime || Date.now());
+  const timeStr = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())} WIB`;
+
+  let msg = `💼 <b>PROFIL &amp; PORTOFOLIO AKUN BINANCE</b>\n\n`;
+
+  const tradeStatus = info.canTrade ? '🟢 Spot Trading Aktif (Bisa Cek Saldo &amp; 1-Click Buy)' : '🟡 Read-Only (Hanya Cek Saldo)';
+  msg += `👤 <b>Status Akun:</b> 🟢 <b>TERHUBUNG (Aktif)</b>\n`;
+  msg += `🔑 <b>API Key:</b> <code>${escapeHtml(maskedApiKey)}</code>\n`;
+  msg += `⚡ <b>Mode Akses:</b> <b>${tradeStatus}</b>\n\n`;
+
+  msg += `💰 <b>PORTOFOLIO SPOT WALLET:</b>\n`;
+  msg += `💵 <b>Total Estimasi Saldo:</b> <b>${formatPrice(info.totalEstimatedUsdt)}</b>\n`;
+  msg += `<i>──────────────────────────────</i>\n\n`;
+
+  if (info.balances.length === 0) {
+    msg += `<i>Tidak ada saldo aset aktif di Spot Wallet (semua &lt; $0.10).</i>\n\n`;
+  } else {
+    msg += `📊 <b>Daftar Aset Aktif:</b>\n`;
+    for (const b of info.balances) {
+      const freeStr = b.free >= 1 ? b.free.toFixed(4) : b.free.toFixed(6);
+      const estStr = b.estimatedUsdt > 0 ? ` (~${formatPrice(b.estimatedUsdt)})` : '';
+      const lockedStr = b.locked > 0 ? ` <i>[🔒 ${b.locked.toFixed(4)}]</i>` : '';
+      msg += `• <b>${b.asset}:</b> <code>${freeStr}</code>${estStr}${lockedStr}\n`;
+    }
+    msg += `\n`;
+  }
+
+  msg += `⏱ <i>Data live diperbarui: ${timeStr}</i>`;
+  return msg.trim();
+}
+
+/**
+ * Formats step-by-step Binance API Creation Guide
+ */
+export function formatBinanceApiGuideMessage(): string {
+  return `📖 <b>PANDUAN MEMBUAT API KEY DI BINANCE</b>
+
+Ikuti 5 langkah mudah berikut:
+1. Buka aplikasi atau situs <b>Binance</b> (pastikan sudah login).
+2. Pergi ke menu <b>Profile ➔ API Management</b>.
+3. Klik <b>Create API</b>, pilih <i>System generated</i>, lalu beri nama label (contoh: <code>ChaewonBot</code>).
+4. Lakukan verifikasi keamanan (2FA / Authenticator / Email).
+5. Pada bagian <b>API Restrictions</b>:
+   ✅ Centang <b>Enable Reading</b> (untuk melihat portofolio saldo)
+   ✅ Centang <b>Enable Spot &amp; Margin Trading</b> (untuk beli koin via 1-Click Buy)
+   ❌ <b>JANGAN CENTANG "Enable Withdrawals"</b> (demi keamanan dana Anda!)
+6. Salin <b>API Key</b> dan <b>Secret Key</b> yang muncul.
+
+🔒 <b>Jaminan Keamanan Bot:</b>
+• Kredensial Anda dienkripsi lokal dengan standar <b>AES-256-GCM</b>.
+• Pesan yang Anda kirim di chat Telegram akan <b>langsung dihapus secara otomatis</b>.
+• Bot TIDAK DAPAT dan TIDAK AKAN PERNAH menarik dana Anda.`;
+}
+
 

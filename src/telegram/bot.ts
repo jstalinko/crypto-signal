@@ -26,7 +26,10 @@ import {
   formatBinanceBalanceMessage,
   formatConnectInstructionsMessage,
   formatBuyConfirmMessage,
-  formatOrderReceiptMessage
+  formatOrderReceiptMessage,
+  formatBinanceAccountNotLoggedInMessage,
+  formatBinanceAccountLoggedInMessage,
+  formatBinanceApiGuideMessage
 } from './formatter.js';
 import { SignalResult } from '../strategy/signal.js';
 import { TradeWatcherService } from '../watcher/tradeWatcher.js';
@@ -70,8 +73,10 @@ const RESERVED_COMMANDS = new Set([
   'saldo',
   'connect',
   'binance',
+  'account',
   'disconnect',
   'logout',
+  'login',
   'cancel'
 ]);
 
@@ -119,8 +124,8 @@ export class TelegramBotService {
     const buttons = [
       ['🔍 Screener (/find)', '⚡ Scalp Radar (/scalp)'],
       ['🎯 Daily Entry (/daily)', '📋 Watchers (/watchers)'],
-      ['💰 Saldo Binance (/balance)', '🔗 Akun Binance (/connect)'],
-      ['📊 Scan Watchlist (/scan)', 'ℹ️ Help & Status (/help)']
+      ['💼 Akun Binance', '📊 Scan Watchlist (/scan)'],
+      ['ℹ️ Help & Status (/help)']
     ];
 
     if (isAdmin) {
@@ -144,14 +149,11 @@ export class TelegramBotService {
         Markup.button.callback('📋 Watchers (/watchers)', 'menu:watchers')
       ],
       [
-        Markup.button.callback('💰 Saldo Binance (/balance)', 'menu:balance'),
-        Markup.button.callback('🔗 Akun Binance (/connect)', 'menu:connect')
+        Markup.button.callback('💼 Akun Binance', 'binance:hub'),
+        Markup.button.callback('📊 Scan Watchlist (/scan)', 'menu:scan')
       ],
       [
-        Markup.button.callback('📊 Scan Watchlist (/scan)', 'menu:scan'),
-        Markup.button.callback('⚙️ Bot Status (/status)', 'menu:status')
-      ],
-      [
+        Markup.button.callback('⚙️ Bot Status (/status)', 'menu:status'),
         Markup.button.callback('📖 Panduan & Help (/help)', 'menu:help')
       ]
     ];
@@ -333,6 +335,7 @@ export class TelegramBotService {
           `• ⚡ <b>Scalp Radar (/scalp)</b>: Momentum cepat timeframe 15m/30m\n` +
           `• 🎯 <b>Daily Entry (/daily)</b>: Rekomendasi entry trading harian (1h)\n` +
           `• 📋 <b>Watchers (/watchers)</b>: Pantauan posisi live trade (TP/SL)\n` +
+          `• 💼 <b>Akun Binance</b>: Cek portofolio saldo live &amp; 1-Click Buy\n` +
           `• 📊 <b>Scan Watchlist (/scan)</b>: Scan pair koin di daftar pantauan\n` +
           `• ℹ️ <b>Help &amp; Status (/help)</b>: Info status bot &amp; panduan risiko`;
 
@@ -478,87 +481,120 @@ export class TelegramBotService {
       }
     };
 
-    const handleBalance = async (ctx: any) => {
+    const handleBinanceHub = async (ctx: any, editMessage: boolean = false) => {
       try {
         const chatId = ctx.chat?.id?.toString() || '';
-        const creds = this.userManager.getBinanceCredentials(chatId);
-        if (!creds) {
-          const text = `⚠️ <b>AKUN BINANCE BELUM TERHUBUNG</b>\n\n` +
-            `Anda belum menghubungkan API Key Binance ke akun Telegram ini.\n\n` +
-            `💡 <i>Ketik /connect atau klik tombol di bawah untuk menghubungkan akun Binance Anda dengan aman (terenkripsi AES-256).</i>`;
-          await ctx.reply(text, {
-            parse_mode: 'HTML',
-            ...Markup.inlineKeyboard([
-              [Markup.button.callback('🔗 Hubungkan Akun Binance', 'connect:start')]
-            ])
-          });
-          return;
-        }
+        const hasLogin = this.userManager.hasBinance(chatId);
 
-        const waitMsg = await ctx.reply('⏳ <i>Mengambil saldo Spot wallet Binance Anda...</i>', { parse_mode: 'HTML' });
-
-        const info = await this.tradingClient.getAccountBalances(creds.apiKey, creds.apiSecret);
-        const text = formatBinanceBalanceMessage(info, creds.maskedApiKey);
-
-        await ctx.deleteMessage(waitMsg.message_id).catch(() => {});
-        await ctx.reply(text, {
-          parse_mode: 'HTML',
-          ...Markup.inlineKeyboard([
+        if (!hasLogin) {
+          const text = formatBinanceAccountNotLoggedInMessage();
+          const keyboard = Markup.inlineKeyboard([
             [
-              Markup.button.callback('🔄 Refresh Saldo', 'menu:balance'),
-              Markup.button.callback('⚙️ Status Akun', 'menu:connect')
+              Markup.button.callback('🔑 Hubungkan Akun (Input API Key)', 'binance:login'),
+              Markup.button.callback('📖 Panduan Buat API Key', 'binance:guide')
+            ],
+            [
+              Markup.button.callback('« Menu Utama', 'menu:main')
             ]
-          ])
-        });
-      } catch (err) {
-        logger.error(`Error handling /balance: ${(err as Error).message}`);
-        await ctx.reply(`❌ Gagal mengambil saldo: ${escapeHtml((err as Error).message)}`);
-      }
-    };
+          ]);
 
-    const handleConnect = async (ctx: any) => {
-      try {
-        const chatId = ctx.chat?.id?.toString() || '';
-        const hasConnected = this.userManager.hasBinance(chatId);
-        const maskedKey = this.userManager.getMaskedBinanceApiKey(chatId) || undefined;
-
-        if (hasConnected) {
-          const text = formatConnectInstructionsMessage(true, maskedKey);
-          await ctx.reply(text, {
-            parse_mode: 'HTML',
-            ...Markup.inlineKeyboard([
-              [Markup.button.callback('💰 Cek Saldo (/balance)', 'menu:balance')],
-              [Markup.button.callback('🔄 Ganti API Key', 'connect:start')],
-              [Markup.button.callback('❌ Putuskan Sambungan', 'connect:disconnect')]
-            ])
-          });
+          if (editMessage && ctx.callbackQuery) {
+            await ctx.editMessageText(text, { parse_mode: 'HTML', ...keyboard }).catch(() => ctx.reply(text, { parse_mode: 'HTML', ...keyboard }));
+          } else {
+            await ctx.reply(text, { parse_mode: 'HTML', ...keyboard });
+          }
           return;
         }
 
-        const text = formatConnectInstructionsMessage(false);
-        await ctx.reply(text, {
-          parse_mode: 'HTML',
-          ...Markup.inlineKeyboard([
-            [Markup.button.callback('🚀 Hubungkan Sekarang', 'connect:start')]
-          ])
-        });
+        // User is logged in: show Profile & Portfolio
+        const creds = this.userManager.getBinanceCredentials(chatId);
+        const maskedKey = this.userManager.getMaskedBinanceApiKey(chatId) || '****';
+
+        if (!creds) {
+          await ctx.reply('⚠️ Kredensial tidak ditemukan. Silakan hubungkan ulang akun Binance Anda.');
+          return;
+        }
+
+        let waitMsg: any = null;
+        if (!editMessage) {
+          waitMsg = await ctx.reply('⏳ <i>Mengambil data akun & saldo live dari Binance...</i>', { parse_mode: 'HTML' });
+        }
+
+        try {
+          const info = await this.tradingClient.getAccountBalances(creds.apiKey, creds.apiSecret);
+          if (waitMsg) {
+            await ctx.deleteMessage(waitMsg.message_id).catch(() => {});
+          }
+
+          const text = formatBinanceAccountLoggedInMessage(info, maskedKey);
+          const keyboard = Markup.inlineKeyboard([
+            [
+              Markup.button.callback('🔄 Refresh Saldo', 'binance:refresh'),
+              Markup.button.callback('🔄 Ganti API Key', 'binance:relogin')
+            ],
+            [
+              Markup.button.callback('❌ Putuskan Akun (Logout)', 'binance:logout'),
+              Markup.button.callback('« Menu Utama', 'menu:main')
+            ]
+          ]);
+
+          if (editMessage && ctx.callbackQuery) {
+            await ctx.editMessageText(text, { parse_mode: 'HTML', ...keyboard }).catch(() => ctx.reply(text, { parse_mode: 'HTML', ...keyboard }));
+          } else {
+            await ctx.reply(text, { parse_mode: 'HTML', ...keyboard });
+          }
+        } catch (fetchErr: any) {
+          if (waitMsg) {
+            await ctx.deleteMessage(waitMsg.message_id).catch(() => {});
+          }
+          const errText = `💼 <b>AKUN BINANCE SAYA</b>\n\n` +
+            `👤 <b>Status Akun:</b> ⚠️ <b>Koneksi Bermasalah</b>\n` +
+            `🔑 <b>API Key:</b> <code>${escapeHtml(maskedKey)}</code>\n\n` +
+            `❌ <b>Gagal mengambil data dari Binance:</b>\n` +
+            `<i>${escapeHtml(fetchErr.message)}</i>\n\n` +
+            `💡 <i>Pastikan API Key masih aktif dan permission Reading dicentang di Binance.</i>`;
+
+          const keyboard = Markup.inlineKeyboard([
+            [
+              Markup.button.callback('🔄 Coba Refresh Lagi', 'binance:refresh'),
+              Markup.button.callback('🔄 Ganti API Key', 'binance:relogin')
+            ],
+            [
+              Markup.button.callback('❌ Putuskan Akun (Logout)', 'binance:logout'),
+              Markup.button.callback('« Menu Utama', 'menu:main')
+            ]
+          ]);
+
+          if (editMessage && ctx.callbackQuery) {
+            await ctx.editMessageText(errText, { parse_mode: 'HTML', ...keyboard }).catch(() => ctx.reply(errText, { parse_mode: 'HTML', ...keyboard }));
+          } else {
+            await ctx.reply(errText, { parse_mode: 'HTML', ...keyboard });
+          }
+        }
       } catch (err) {
-        logger.error(`Error handling /connect: ${(err as Error).message}`);
+        logger.error(`Error handling Binance Account Hub: ${(err as Error).message}`);
       }
     };
 
     const handleDisconnect = async (ctx: any) => {
       try {
         const chatId = ctx.chat?.id?.toString() || '';
-        const removed = this.userManager.removeBinanceCredentials(chatId);
-        if (removed) {
-          await ctx.reply(
-            `✅ <b>AKUN BINANCE BERHASIL DIPUTUSKAN</b>\n\nKredensial API Key Anda telah dihapus secara permanen dari sistem.`,
-            { parse_mode: 'HTML' }
-          );
-        } else {
+        const hasConnected = this.userManager.hasBinance(chatId);
+        if (!hasConnected) {
           await ctx.reply('ℹ️ Tidak ada akun Binance yang terhubung saat ini.');
+          return;
         }
+
+        const text = `⚠️ <b>KONFIRMASI PUTUSKAN AKUN (LOGOUT)</b>\n\n` +
+          `Apakah Anda yakin ingin memutuskan sambungan akun Binance?\n` +
+          `Kredensial API Key yang tersimpan akan dihapus secara permanen dari bot.`;
+        const keyboard = Markup.inlineKeyboard([
+          [
+            Markup.button.callback('✅ Ya, Putuskan Akun', 'binance:logout_confirm'),
+            Markup.button.callback('❌ Batal', 'binance:hub')
+          ]
+        ]);
+        await ctx.reply(text, { parse_mode: 'HTML', ...keyboard });
       } catch (err) {
         logger.error(`Error handling /disconnect: ${(err as Error).message}`);
       }
@@ -569,8 +605,7 @@ export class TelegramBotService {
     this.bot.command('help', handleHelp);
     this.bot.command('status', handleStatus);
     this.bot.command('menu', handleMenu);
-    this.bot.command(['balance', 'portfolio', 'saldo'], handleBalance);
-    this.bot.command(['connect', 'binance', 'login'], handleConnect);
+    this.bot.command(['binance', 'account', 'connect', 'balance', 'portfolio', 'saldo'], (ctx) => handleBinanceHub(ctx));
     this.bot.command(['disconnect', 'logout'], handleDisconnect);
     this.bot.command('cancel', async (ctx) => {
       const chatId = ctx.chat?.id?.toString() || '';
@@ -813,32 +848,81 @@ export class TelegramBotService {
       await handleAdminMenu(ctx);
     });
 
-    this.bot.action('menu:balance', async (ctx) => {
+    this.bot.action(['menu:balance', 'menu:connect', 'binance:hub'], async (ctx) => {
       await ctx.answerCbQuery().catch(() => {});
-      await handleBalance(ctx);
+      await handleBinanceHub(ctx, true);
     });
 
-    this.bot.action('menu:connect', async (ctx) => {
-      await ctx.answerCbQuery().catch(() => {});
-      await handleConnect(ctx);
+    this.bot.action('binance:refresh', async (ctx) => {
+      await ctx.answerCbQuery('Memperbarui saldo...').catch(() => {});
+      await handleBinanceHub(ctx, true);
     });
 
-    this.bot.action('connect:start', async (ctx) => {
+    this.bot.action(['connect:start', 'binance:login', 'binance:relogin'], async (ctx) => {
       await ctx.answerCbQuery().catch(() => {});
       const chatId = ctx.chat?.id?.toString() || '';
       this.userSessionStates.set(chatId, { step: 'AWAITING_API_KEY' });
       await ctx.reply(
         `🔑 <b>LANGKAH 1/2: Masukkan API Key Binance</b>\n\n` +
-        `Silakan kirimkan (paste) <b>API Key</b> akun Binance Anda ke chat ini.\n\n` +
-        `🔒 <i>Pesan Anda akan otomatis langsung dihapus oleh bot demi keamanan riwayat chat.</i>\n` +
-        `💡 <i>Ketik /cancel kapan saja jika ingin membatalkan.</i>`,
-        { parse_mode: 'HTML' }
+        `Silakan kirimkan (paste) <b>API Key</b> akun Binance Anda ke chat ini:\n\n` +
+        `🔒 <i>Pesan Anda akan otomatis langsung dihapus oleh bot demi privasi dan keamanan riwayat chat.</i>\n\n` +
+        `💡 <i>Ketik /cancel atau klik tombol di bawah untuk membatalkan.</i>`,
+        {
+          parse_mode: 'HTML',
+          ...Markup.inlineKeyboard([
+            [Markup.button.callback('❌ Batalkan', 'binance:cancel_input')]
+          ])
+        }
       );
     });
 
-    this.bot.action('connect:disconnect', async (ctx) => {
+    this.bot.action('binance:guide', async (ctx) => {
       await ctx.answerCbQuery().catch(() => {});
-      await handleDisconnect(ctx);
+      const text = formatBinanceApiGuideMessage();
+      await ctx.editMessageText(text, {
+        parse_mode: 'HTML',
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback('🔑 Lanjut Input API Key', 'binance:login')],
+          [Markup.button.callback('« Kembali ke Akun Binance', 'binance:hub')]
+        ])
+      }).catch(() => {});
+    });
+
+    this.bot.action('binance:logout', async (ctx) => {
+      await ctx.answerCbQuery().catch(() => {});
+      const text = `⚠️ <b>KONFIRMASI PUTUSKAN AKUN (LOGOUT)</b>\n\n` +
+        `Apakah Anda yakin ingin memutuskan sambungan akun Binance?\n` +
+        `Kredensial API Key yang tersimpan akan dihapus secara permanen dari bot.`;
+      await ctx.editMessageText(text, {
+        parse_mode: 'HTML',
+        ...Markup.inlineKeyboard([
+          [
+            Markup.button.callback('✅ Ya, Putuskan Akun', 'binance:logout_confirm'),
+            Markup.button.callback('❌ Batal', 'binance:hub')
+          ]
+        ])
+      }).catch(() => {});
+    });
+
+    this.bot.action(['connect:disconnect', 'binance:logout_confirm'], async (ctx) => {
+      const chatId = ctx.chat?.id?.toString() || '';
+      this.userManager.removeBinanceCredentials(chatId);
+      await ctx.answerCbQuery('Akun Binance berhasil diputuskan.').catch(() => {});
+      await ctx.reply('✅ <b>Akun Binance berhasil diputuskan!</b>\n\nKredensial API Key telah dihapus secara permanen dari sistem.', { parse_mode: 'HTML' });
+      await handleBinanceHub(ctx, false);
+    });
+
+    this.bot.action('binance:cancel_input', async (ctx) => {
+      const chatId = ctx.chat?.id?.toString() || '';
+      this.userSessionStates.delete(chatId);
+      await ctx.answerCbQuery('Input API Key dibatalkan.').catch(() => {});
+      await ctx.reply('✅ Input API Key berhasil dibatalkan.');
+      await handleBinanceHub(ctx, false);
+    });
+
+    this.bot.action('menu:main', async (ctx) => {
+      await ctx.answerCbQuery().catch(() => {});
+      await handleMenu(ctx);
     });
 
     // 1-Click Buy Actions
@@ -856,7 +940,7 @@ export class TelegramBotService {
             {
               parse_mode: 'HTML',
               ...Markup.inlineKeyboard([
-                [Markup.button.callback('🔗 Hubungkan Akun Sekarang', 'connect:start')]
+                [Markup.button.callback('💼 Hubungkan Akun Sekarang', 'binance:login')]
               ])
             }
           );
@@ -1460,11 +1544,11 @@ export class TelegramBotService {
               `🔑 API Key: <code>${maskedKey}</code>\n` +
               `⚡ Mode: <b>${statusMode}</b>\n\n` +
               `🔒 Kredensial telah diamankan dengan enkripsi standar militer <b>AES-256-GCM</b>.\n\n` +
-              `Ketik /balance untuk melihat saldo dan portofolio Anda sekarang!`,
+              `Buka menu <b>💼 Akun Binance</b> untuk melihat profil dan portofolio Anda!`,
               {
                 parse_mode: 'HTML',
                 ...Markup.inlineKeyboard([
-                  [Markup.button.callback('💰 Cek Saldo Sekarang', 'menu:balance')]
+                  [Markup.button.callback('💼 Buka Akun Binance & Saldo', 'binance:hub')]
                 ])
               }
             );
@@ -1473,9 +1557,15 @@ export class TelegramBotService {
               `❌ <b>VERIFIKASI AKUN GAGAL!</b>\n\n` +
               `Binance menolak kredensial tersebut:\n` +
               `<i>${escapeHtml(testRes.error || 'Invalid API-key, IP, or permissions')}</i>\n\n` +
-              `💡 <i>Pastikan API Key & Secret disalin dengan benar tanpa spasi tambahan, dan IP Access Restriction tidak memblokir server.</i>\n\n` +
-              `Ketik /connect jika ingin mencoba kembali.`,
-              { parse_mode: 'HTML' }
+              `💡 <i>Pastikan API Key & Secret disalin dengan benar tanpa spasi tambahan, dan izin Reading telah dicentang di Binance.</i>`,
+              {
+                parse_mode: 'HTML',
+                ...Markup.inlineKeyboard([
+                  [Markup.button.callback('🔄 Coba Hubungkan Lagi', 'binance:login')],
+                  [Markup.button.callback('📖 Panduan API Key', 'binance:guide')],
+                  [Markup.button.callback('« Kembali ke Akun Binance', 'binance:hub')]
+                ])
+              }
             );
           }
           return;
@@ -1542,12 +1632,16 @@ export class TelegramBotService {
         await handleWatchers(ctx);
         return;
       }
+      if (/^💼.*(binance|akun)/i.test(rawText) || rawText === '💼 Akun Binance' || rawText === '💼 Binance Account') {
+        await handleBinanceHub(ctx);
+        return;
+      }
       if (/^💰.*(balance|saldo)/i.test(rawText) || rawText === '💰 Saldo Binance (/balance)') {
-        await handleBalance(ctx);
+        await handleBinanceHub(ctx);
         return;
       }
       if (/^🔗.*(connect|akun)/i.test(rawText) || rawText === '🔗 Akun Binance (/connect)') {
-        await handleConnect(ctx);
+        await handleBinanceHub(ctx);
         return;
       }
       if (/^📊.*scan/i.test(rawText) || rawText === '📊 Scan Watchlist (/scan)') {
@@ -1570,6 +1664,16 @@ export class TelegramBotService {
       const parts = rawText.slice(1).split(/\s+/);
       const rawCmd = parts[0].toLowerCase().split('@')[0]; // handle @bot_username
       const tf = parts[1];
+
+      // Direct routing for Binance Hub commands (prevents false ticker matching):
+      if (['binance', 'account', 'connect', 'balance', 'portfolio', 'saldo'].includes(rawCmd)) {
+        await handleBinanceHub(ctx);
+        return;
+      }
+      if (['disconnect', 'logout'].includes(rawCmd)) {
+        await handleDisconnect(ctx);
+        return;
+      }
 
       // Handle /unwatch_<coin> shortcut
       const unwatchMatch = rawCmd.match(/^unwatch_([a-z0-9]+)$/);
@@ -1618,8 +1722,7 @@ export class TelegramBotService {
           { command: 'find', description: '🔍 Screener 30 pair teraktif di Binance' },
           { command: 'scalp', description: '⚡ Scalping radar momentum (15m/30m)' },
           { command: 'daily', description: '🎯 Rekomendasi entry trading harian (1h)' },
-          { command: 'balance', description: '💰 Cek saldo & portofolio spot Binance' },
-          { command: 'connect', description: '🔗 Hubungkan akun Binance (API Key)' },
+          { command: 'binance', description: '💼 Akun Binance, portofolio & 1-Click Buy' },
           { command: 'watchers', description: '📋 Pantauan live trade aktif (TP/SL)' },
           { command: 'scan', description: '📊 Scan watchlist pair' },
           { command: 'status', description: '⚙️ Status operasional & scanner bot' },
