@@ -43,6 +43,7 @@ async function main(): Promise<void> {
     onScanSymbol: async (symbol: string, tf?: string) => scanner.scanSymbol(symbol, tf),
     onScanScreener: async (limit?: number, tf?: string) => scanner.scanScreener(limit, tf),
     onScanScalping: async (limit?: number, tf?: string) => scanner.scanScalping(limit, tf),
+    onScanDaily: async (limit?: number, tf?: string) => scanner.scanDailyTrading(limit, tf),
     getStatusInfo: () => scanner.getStatusInfo()
   });
 

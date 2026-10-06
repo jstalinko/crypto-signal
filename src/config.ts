@@ -30,11 +30,20 @@ export interface StrategyConfig {
   buyThreshold: number;
 }
 
+export interface DailyTradingConfig {
+  enabled: boolean;
+  timeframe: string;
+  intervalHours: number;
+  minScore: number;
+  limit: number;
+}
+
 export interface AppConfig {
   telegram: TelegramConfig;
   exchange: ExchangeConfig;
   trading: TradingConfig;
   strategy: StrategyConfig;
+  dailyTrading: DailyTradingConfig;
 }
 
 const DEFAULT_CONFIG_FILENAME = 'config.json';
@@ -109,6 +118,15 @@ export function loadConfig(configPath?: string): AppConfig {
     buyThreshold: Number(parsed.strategy?.buyThreshold) || 75
   };
 
+  // Validate Daily Trading Config
+  const dailyTrading: DailyTradingConfig = {
+    enabled: parsed.dailyTrading?.enabled !== false,
+    timeframe: parsed.dailyTrading?.timeframe?.trim() || '1h',
+    intervalHours: Number(parsed.dailyTrading?.intervalHours) > 0 ? Number(parsed.dailyTrading?.intervalHours) : 4,
+    minScore: Number(parsed.dailyTrading?.minScore) || 70,
+    limit: Number(parsed.dailyTrading?.limit) || 3
+  };
+
   const config: AppConfig = {
     telegram: {
       token: parsed.telegram.token.trim(),
@@ -125,7 +143,8 @@ export function loadConfig(configPath?: string): AppConfig {
       candleLimit,
       scanIntervalSeconds
     },
-    strategy
+    strategy,
+    dailyTrading
   };
 
   return config;

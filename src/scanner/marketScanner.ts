@@ -17,10 +17,14 @@ export class MarketScanner {
   private botService?: TelegramBotService;
   private signalStates: Map<string, SymbolSignalState> = new Map();
   private timer: NodeJS.Timeout | null = null;
+  private dailyTimer: NodeJS.Timeout | null = null;
   private isScanning = false;
+  private isDailyScanning = false;
   private startTime: number;
   private lastScanTimestamp: number = 0;
   private nextScanTimestamp: number = 0;
+  private lastDailyUpdateTimestamp: number = 0;
+  private nextDailyUpdateTimestamp: number = 0;
 
   constructor(config: AppConfig, exchange: ExchangeClient, botService?: TelegramBotService) {
     this.config = config;
@@ -54,6 +58,28 @@ export class MarketScanner {
     }, intervalMs);
 
     this.nextScanTimestamp = Date.now() + intervalMs;
+
+    // Start periodic daily trading updates if enabled
+    if (this.config.dailyTrading?.enabled) {
+      const intervalHours = this.config.dailyTrading.intervalHours || 4;
+      const dailyIntervalMs = intervalHours * 60 * 60 * 1000;
+      logger.info(`Daily Trading Scheduler enabled (every ${intervalHours}h on ${this.config.dailyTrading.timeframe || '1h'}).`);
+
+      // Run initial daily scan after 15s to let exchange connection settle
+      setTimeout(() => {
+        this.runDailyTradingCycle().catch(err => {
+          logger.error(`Initial daily trading scan encountered error: ${(err as Error).message}`);
+        });
+      }, 15000);
+
+      this.dailyTimer = setInterval(() => {
+        this.runDailyTradingCycle().catch(err => {
+          logger.error(`Periodic daily trading scan encountered error: ${(err as Error).message}`);
+        });
+      }, dailyIntervalMs);
+
+      this.nextDailyUpdateTimestamp = Date.now() + dailyIntervalMs;
+    }
   }
 
   /**
@@ -64,6 +90,11 @@ export class MarketScanner {
       clearInterval(this.timer);
       this.timer = null;
       logger.info('Market Scanner stopped');
+    }
+    if (this.dailyTimer) {
+      clearInterval(this.dailyTimer);
+      this.dailyTimer = null;
+      logger.info('Daily Trading Scanner stopped');
     }
   }
 
@@ -252,6 +283,102 @@ export class MarketScanner {
   }
 
   /**
+   * Daily Trading Scanner: Scans top liquid Binance USDT pairs (1h timeframe) for high-probability daily trade setups
+   */
+  public async scanDailyTrading(
+    limit: number = 3,
+    customTimeframe?: string
+  ): Promise<{ results: SignalResult[]; totalScanned: number }> {
+    const tf = customTimeframe || this.config.dailyTrading?.timeframe || '1h';
+    const minScore = this.config.dailyTrading?.minScore || 70;
+    const fetchLimit = 35;
+
+    logger.info(`Running Daily Trading Scanner for top ${fetchLimit} USDT pairs on timeframe ${tf}...`);
+
+    let symbols = await this.exchange.getTopUsdtSymbols(fetchLimit);
+    if (!symbols || symbols.length === 0) {
+      symbols = this.config.trading.symbols;
+    }
+
+    const candidateResults: SignalResult[] = [];
+    const batchSize = 5;
+
+    for (let i = 0; i < symbols.length; i += batchSize) {
+      const batch = symbols.slice(i, i + batchSize);
+      const batchPromises = batch.map(async (symbol) => {
+        try {
+          const res = await this.scanSymbol(symbol, tf);
+          // For daily trading, filter for setups with solid score and realistic risk (SL <= 8.5%)
+          if (res.score >= minScore && res.stopLossPercent <= 8.5) {
+            return res;
+          }
+          return null;
+        } catch (err) {
+          logger.warn(`Daily scanner skipping ${symbol}: ${(err as Error).message}`);
+          return null;
+        }
+      });
+
+      const batchResults = await Promise.all(batchPromises);
+      for (const res of batchResults) {
+        if (res) candidateResults.push(res);
+      }
+
+      if (i + batchSize < symbols.length) {
+        await new Promise(r => setTimeout(r, 100));
+      }
+    }
+
+    // Sort: BUY signals first, then by score descending
+    candidateResults.sort((a, b) => {
+      if (a.signal === 'BUY' && b.signal !== 'BUY') return -1;
+      if (a.signal !== 'BUY' && b.signal === 'BUY') return 1;
+      return b.score - a.score;
+    });
+
+    const topPicks = candidateResults.slice(0, limit);
+
+    return {
+      results: topPicks,
+      totalScanned: symbols.length
+    };
+  }
+
+  /**
+   * Run automated daily trading cycle and broadcast updates to Telegram
+   */
+  public async runDailyTradingCycle(): Promise<void> {
+    if (this.isDailyScanning) {
+      logger.warn('Previous daily trading scan cycle still active. Skipping.');
+      return;
+    }
+    if (!this.botService) return;
+
+    this.isDailyScanning = true;
+    try {
+      const tf = this.config.dailyTrading?.timeframe || '1h';
+      const limit = this.config.dailyTrading?.limit || 3;
+      logger.info('Executing scheduled Daily Trading scan...');
+
+      const { results, totalScanned } = await this.scanDailyTrading(limit, tf);
+      this.lastDailyUpdateTimestamp = Date.now();
+      const intervalMs = (this.config.dailyTrading?.intervalHours || 4) * 60 * 60 * 1000;
+      this.nextDailyUpdateTimestamp = this.lastDailyUpdateTimestamp + intervalMs;
+
+      if (results.length > 0) {
+        logger.info(`Found ${results.length} daily trading candidate setups. Dispatching update to Telegram.`);
+        await this.botService.sendDailyTradingUpdate(results, totalScanned, tf, true);
+      } else {
+        logger.info('No daily trading setups met threshold (score >= minScore). Skipping automated alert.');
+      }
+    } catch (err) {
+      logger.error(`Error in runDailyTradingCycle: ${(err as Error).message}`);
+    } finally {
+      this.isDailyScanning = false;
+    }
+  }
+
+  /**
    * Duplicate signal prevention & state transition evaluation
    */
   private async evaluateAndDispatchAlert(result: SignalResult): Promise<void> {
@@ -334,6 +461,10 @@ export class MarketScanner {
       uptimeStr = `${minutes}m ${seconds}s`;
     }
 
+    const dailyStatus = this.config.dailyTrading?.enabled
+      ? `ACTIVE (${this.config.dailyTrading.intervalHours}h interval, ${this.config.dailyTrading.timeframe})`
+      : 'DISABLED';
+
     return {
       status: this.isScanning ? 'SCANNING' : 'ONLINE',
       exchange: 'Binance',
@@ -341,7 +472,9 @@ export class MarketScanner {
       timeframe: this.config.trading.timeframe,
       lastScanTime: formatTime(this.lastScanTimestamp),
       nextScanTime: formatTime(this.nextScanTimestamp),
-      uptime: uptimeStr
+      uptime: uptimeStr,
+      dailyTradingStatus: dailyStatus,
+      nextDailyScanTime: this.config.dailyTrading?.enabled ? formatTime(this.nextDailyUpdateTimestamp) : undefined
     };
   }
 }

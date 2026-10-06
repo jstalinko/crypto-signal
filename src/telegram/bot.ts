@@ -7,6 +7,7 @@ import {
   formatSingleAnalysisMessage,
   formatScreenerMessage,
   formatScalpingMessage,
+  formatDailyTradingMessage,
   formatWatcherConfirmationMessage,
   formatWatchersListMessage,
   formatBotStatusMessage,
@@ -24,6 +25,7 @@ export interface TelegramBotHandlers {
   onScanSymbol: (symbol: string, timeframe?: string) => Promise<SignalResult>;
   onScanScreener: (limit?: number, timeframe?: string) => Promise<{ results: SignalResult[]; totalScanned: number }>;
   onScanScalping: (limit?: number, timeframe?: string) => Promise<{ results: SignalResult[]; totalScanned: number }>;
+  onScanDaily: (limit?: number, timeframe?: string) => Promise<{ results: SignalResult[]; totalScanned: number }>;
   getStatusInfo: () => BotStatusInfo;
 }
 
@@ -36,6 +38,9 @@ const RESERVED_COMMANDS = new Set([
   'find',
   'signals',
   'scalp',
+  'daily',
+  'suggestion',
+  'menu',
   'watchers',
   'active',
   'unwatch',
@@ -64,16 +69,50 @@ export class TelegramBotService {
   }
 
   /**
+   * Main persistent reply keyboard with core shortcuts
+   */
+  public getMainReplyKeyboard() {
+    return Markup.keyboard([
+      ['🔍 Screener (/find)', '⚡ Scalp Radar (/scalp)'],
+      ['🎯 Daily Entry (/daily)', '📋 Watchers (/watchers)'],
+      ['📊 Scan Watchlist (/scan)', 'ℹ️ Help & Status (/help)']
+    ]).resize();
+  }
+
+  /**
+   * Main interactive inline keyboard for /menu
+   */
+  public getMainInlineKeyboard() {
+    return Markup.inlineKeyboard([
+      [
+        Markup.button.callback('🔍 Screener (/find)', 'menu:find'),
+        Markup.button.callback('⚡ Scalp Radar (/scalp)', 'menu:scalp')
+      ],
+      [
+        Markup.button.callback('🎯 Daily Entry (/daily)', 'menu:daily'),
+        Markup.button.callback('📋 Watchers (/watchers)', 'menu:watchers')
+      ],
+      [
+        Markup.button.callback('📊 Scan Watchlist (/scan)', 'menu:scan'),
+        Markup.button.callback('⚙️ Bot Status (/status)', 'menu:status')
+      ],
+      [
+        Markup.button.callback('📖 Panduan & Help (/help)', 'menu:help')
+      ]
+    ]);
+  }
+
+  /**
    * Safely reply with HTML formatting. If Telegram returns 400 Bad Request
    * due to unsupported HTML tags or entity errors, fallback to plain text.
    */
-  public async replySafe(ctx: any, html: string): Promise<any> {
+  public async replySafe(ctx: any, html: string, extra?: any): Promise<any> {
     try {
-      return await ctx.reply(html, { parse_mode: 'HTML' });
+      return await ctx.reply(html, { parse_mode: 'HTML', ...(extra || {}) });
     } catch (err) {
       logger.warn(`Failed to send HTML reply: ${(err as Error).message}. Falling back to plain text.`);
       const plainText = html.replace(/<[^>]*>/g, '');
-      return await ctx.reply(plainText);
+      return await ctx.reply(plainText, extra);
     }
   }
 
@@ -101,39 +140,56 @@ export class TelegramBotService {
 
     const exampleCoins = ['btc', 'eth', 'sol', 'sui', 'near', 'doge', 'pepe', 'xrp'];
 
-    // /start command
-    this.bot.command('start', async (ctx) => {
+    // 1. Helper handlers
+    const handleStart = async (ctx: any) => {
       try {
         const text = formatStartMessage(exampleCoins);
-        await this.replySafe(ctx, text);
+        await this.replySafe(ctx, text, this.getMainReplyKeyboard());
       } catch (err) {
         logger.error(`Error handling /start: ${(err as Error).message}`);
       }
-    });
+    };
 
-    // /help command
-    this.bot.command('help', async (ctx) => {
+    const handleHelp = async (ctx: any) => {
       try {
         const text = formatHelpMessage();
-        await this.replySafe(ctx, text);
+        await this.replySafe(ctx, text, this.getMainReplyKeyboard());
       } catch (err) {
         logger.error(`Error handling /help: ${(err as Error).message}`);
       }
-    });
+    };
 
-    // /status command
-    this.bot.command('status', async (ctx) => {
+    const handleStatus = async (ctx: any) => {
       try {
         if (!this.handlers) return;
         const statusInfo = this.handlers.getStatusInfo();
         const text = formatBotStatusMessage(statusInfo);
-        await this.replySafe(ctx, text);
+        await this.replySafe(ctx, text, this.getMainReplyKeyboard());
       } catch (err) {
         logger.error(`Error handling /status: ${(err as Error).message}`);
       }
-    });
+    };
 
-    // /screener, /find, /signals command: Market Screener across top Binance coins
+    const handleMenu = async (ctx: any) => {
+      try {
+        const menuText = `📱 <b>CHAEWON CRYPTO SIGNAL — MAIN MENU</b>\n\n` +
+          `Pilih perintah melalui tombol menu interaktif berikut atau gunakan tombol keyboard di bawah layar:\n\n` +
+          `• 🔍 <b>Screener (/find)</b>: Scan 30 koin aktif di Binance\n` +
+          `• ⚡ <b>Scalp Radar (/scalp)</b>: Momentum cepat timeframe 15m/30m\n` +
+          `• 🎯 <b>Daily Entry (/daily)</b>: Rekomendasi entry trading harian (1h)\n` +
+          `• 📋 <b>Watchers (/watchers)</b>: Pantauan posisi live trade (TP/SL)\n` +
+          `• 📊 <b>Scan Watchlist (/scan)</b>: Scan pair koin di daftar pantauan\n` +
+          `• ℹ️ <b>Help &amp; Status (/help)</b>: Info status bot &amp; panduan risiko`;
+
+        await ctx.reply(menuText, {
+          parse_mode: 'HTML',
+          ...this.getMainInlineKeyboard()
+        });
+      } catch (err) {
+        logger.error(`Error handling /menu: ${(err as Error).message}`);
+      }
+    };
+
     const handleScreener = async (ctx: any, timeframe?: string) => {
       try {
         if (!this.handlers) return;
@@ -144,37 +200,17 @@ export class TelegramBotService {
 
         const { results, totalScanned } = await this.handlers.onScanScreener(30, tf);
         const text = formatScreenerMessage(results, totalScanned, tf);
-        await this.replySafe(ctx, text);
+        await this.replySafe(ctx, text, this.getMainReplyKeyboard());
       } catch (err) {
         logger.error(`Error handling screener: ${(err as Error).message}`);
         await ctx.reply(`❌ Gagal melakukan screener market: ${escapeHtml((err as Error).message)}`);
       }
     };
 
-    this.bot.command('screener', async (ctx) => {
-      const parts = ctx.message.text.trim().split(/\s+/);
-      const tf = parts[1];
-      await handleScreener(ctx, tf);
-    });
-
-    this.bot.command('find', async (ctx) => {
-      const parts = ctx.message.text.trim().split(/\s+/);
-      const tf = parts[1];
-      await handleScreener(ctx, tf);
-    });
-
-    this.bot.command('signals', async (ctx) => {
-      const parts = ctx.message.text.trim().split(/\s+/);
-      const tf = parts[1];
-      await handleScreener(ctx, tf);
-    });
-
-    // /scalp command: Fast momentum scalping radar on 15m - 30m
-    this.bot.command('scalp', async (ctx) => {
+    const handleScalp = async (ctx: any, timeframe?: string) => {
       try {
         if (!this.handlers) return;
-        const parts = ctx.message.text.trim().split(/\s+/);
-        const tf = parts[1] === '30m' ? '30m' : '15m';
+        const tf = timeframe === '30m' ? '30m' : '15m';
 
         await ctx.reply(`⚡ <i>Memindai peluang momentum scalping cepat (${tf})...</i>`, {
           parse_mode: 'HTML'
@@ -182,15 +218,43 @@ export class TelegramBotService {
 
         const { results, totalScanned } = await this.handlers.onScanScalping(25, tf);
         const text = formatScalpingMessage(results, totalScanned, tf);
-        await this.replySafe(ctx, text);
+        await this.replySafe(ctx, text, this.getMainReplyKeyboard());
       } catch (err) {
         logger.error(`Error handling /scalp: ${(err as Error).message}`);
         await ctx.reply(`❌ Gagal scan scalping: ${escapeHtml((err as Error).message)}`);
       }
-    });
+    };
 
-    // /watchers & /active command: List all active tracked trades
-    this.bot.command(['watchers', 'active'], async (ctx) => {
+    const handleDaily = async (ctx: any, timeframe?: string) => {
+      try {
+        if (!this.handlers) return;
+        const tf = timeframe || this.config.dailyTrading?.timeframe || '1h';
+        await ctx.reply(`🎯 <i>Menganalisa setup peluang entry Daily Trading (${tf}) di Binance Spot...</i>`, {
+          parse_mode: 'HTML'
+        });
+
+        const limit = this.config.dailyTrading?.limit || 3;
+        const { results, totalScanned } = await this.handlers.onScanDaily(limit, tf);
+        const text = formatDailyTradingMessage(results, totalScanned, tf, false);
+
+        if (results.length > 0) {
+          const buttons = results.map(r => [
+            Markup.button.callback(`🔔 Notice Me: ${r.symbol.replace('USDT', '')}`, `notice:${r.symbol}:${r.timeframe}`)
+          ]);
+          await ctx.reply(text, {
+            parse_mode: 'HTML',
+            ...Markup.inlineKeyboard(buttons)
+          });
+        } else {
+          await this.replySafe(ctx, text, this.getMainReplyKeyboard());
+        }
+      } catch (err) {
+        logger.error(`Error handling /daily: ${(err as Error).message}`);
+        await ctx.reply(`❌ Gagal analisa daily trading: ${escapeHtml((err as Error).message)}`);
+      }
+    };
+
+    const handleWatchers = async (ctx: any) => {
       try {
         if (!this.watcherService) {
           await ctx.reply('ℹ️ Watcher service belum diaktifkan.');
@@ -198,11 +262,53 @@ export class TelegramBotService {
         }
         const active = this.watcherService.getActiveWatchers();
         const text = formatWatchersListMessage(active);
-        await this.replySafe(ctx, text);
+        await this.replySafe(ctx, text, this.getMainReplyKeyboard());
       } catch (err) {
         logger.error(`Error handling /watchers: ${(err as Error).message}`);
       }
+    };
+
+    const handleScan = async (ctx: any, timeframe?: string) => {
+      try {
+        if (!this.handlers) return;
+        const tf = timeframe || this.config.trading.timeframe;
+        await ctx.reply(`⏳ <i>Scanning watchlist pair (${tf})...</i>`, {
+          parse_mode: 'HTML'
+        });
+        const results = await this.handlers.onScanAll(tf);
+        const text = formatScanSummaryMessage(results);
+        await this.replySafe(ctx, text, this.getMainReplyKeyboard());
+      } catch (err) {
+        logger.error(`Error handling /scan: ${(err as Error).message}`);
+        await ctx.reply(`❌ Gagal scan market: ${escapeHtml((err as Error).message)}`);
+      }
+    };
+
+    // 2. Register bot commands
+    this.bot.command('start', handleStart);
+    this.bot.command('help', handleHelp);
+    this.bot.command('status', handleStatus);
+    this.bot.command('menu', handleMenu);
+
+    this.bot.command(['screener', 'find', 'signals'], async (ctx) => {
+      const parts = ctx.message.text.trim().split(/\s+/);
+      const tf = parts[1];
+      await handleScreener(ctx, tf);
     });
+
+    this.bot.command('scalp', async (ctx) => {
+      const parts = ctx.message.text.trim().split(/\s+/);
+      const tf = parts[1] === '30m' ? '30m' : '15m';
+      await handleScalp(ctx, tf);
+    });
+
+    this.bot.command(['daily', 'suggestion'], async (ctx) => {
+      const parts = ctx.message.text.trim().split(/\s+/);
+      const tf = parts[1];
+      await handleDaily(ctx, tf);
+    });
+
+    this.bot.command(['watchers', 'active'], handleWatchers);
 
     // /unwatch command: Stop watching a specific trade
     this.bot.command('unwatch', async (ctx) => {
@@ -237,10 +343,9 @@ export class TelegramBotService {
       }
     });
 
-    // /scan command (Watchlist scan or /scan all for screener)
+    // /scan command
     this.bot.command('scan', async (ctx) => {
       try {
-        if (!this.handlers) return;
         const parts = ctx.message.text.trim().split(/\s+/);
         const arg = parts[1]?.toLowerCase();
 
@@ -251,15 +356,9 @@ export class TelegramBotService {
         }
 
         const tf = arg && /^\d+[mhd]$/.test(arg) ? arg : undefined;
-        await ctx.reply(`⏳ <i>Scanning watchlist pair (${tf || this.config.trading.timeframe})...</i>`, {
-          parse_mode: 'HTML'
-        });
-        const results = await this.handlers.onScanAll(tf);
-        const text = formatScanSummaryMessage(results);
-        await this.replySafe(ctx, text);
+        await handleScan(ctx, tf);
       } catch (err) {
         logger.error(`Error handling /scan: ${(err as Error).message}`);
-        await ctx.reply(`❌ Gagal scan market: ${escapeHtml((err as Error).message)}`);
       }
     });
 
@@ -318,7 +417,8 @@ export class TelegramBotService {
     this.bot.command('entry', handleAnalyzeCommand);
     this.bot.command('cek', handleAnalyzeCommand);
 
-    // Callback Query Handler: "Notice Me" clicked!
+    // 3. Callback Query Handlers
+    // Notice Me clicked
     this.bot.action(/^notice:([A-Z0-9]+):([a-z0-9]+)$/i, async (ctx) => {
       try {
         const symbol = ctx.match[1].toUpperCase();
@@ -361,7 +461,7 @@ export class TelegramBotService {
       }
     });
 
-    // Callback Query Handler: Cancel watcher button clicked!
+    // Unwatch action button clicked
     this.bot.action(/^unwatch:([A-Z0-9]+)$/i, async (ctx) => {
       try {
         const symbol = ctx.match[1].toUpperCase();
@@ -377,14 +477,71 @@ export class TelegramBotService {
       }
     });
 
-    // Universal dynamic slash command handler for ANY coin: e.g. /btc, /eth, /sol, /doge, /pepe, /sui
+    // Menu callback actions
+    this.bot.action('menu:find', async (ctx) => {
+      await ctx.answerCbQuery().catch(() => {});
+      await handleScreener(ctx);
+    });
+    this.bot.action('menu:scalp', async (ctx) => {
+      await ctx.answerCbQuery().catch(() => {});
+      await handleScalp(ctx);
+    });
+    this.bot.action('menu:daily', async (ctx) => {
+      await ctx.answerCbQuery().catch(() => {});
+      await handleDaily(ctx);
+    });
+    this.bot.action('menu:watchers', async (ctx) => {
+      await ctx.answerCbQuery().catch(() => {});
+      await handleWatchers(ctx);
+    });
+    this.bot.action('menu:scan', async (ctx) => {
+      await ctx.answerCbQuery().catch(() => {});
+      await handleScan(ctx);
+    });
+    this.bot.action('menu:status', async (ctx) => {
+      await ctx.answerCbQuery().catch(() => {});
+      await handleStatus(ctx);
+    });
+    this.bot.action('menu:help', async (ctx) => {
+      await ctx.answerCbQuery().catch(() => {});
+      await handleHelp(ctx);
+    });
+
+    // 4. Text Message listener: Keyboard menu buttons & Dynamic Coin tickers
     this.bot.on('text', async (ctx, next) => {
-      const text = ctx.message.text.trim();
-      if (!text.startsWith('/')) {
+      const rawText = ctx.message.text.trim();
+
+      // Check persistent Reply Keyboard button presses:
+      if (/^🔍.*(screener|find)/i.test(rawText) || rawText === '🔍 Screener (/find)') {
+        await handleScreener(ctx);
+        return;
+      }
+      if (/^⚡.*scalp/i.test(rawText) || rawText === '⚡ Scalp Radar (/scalp)') {
+        await handleScalp(ctx);
+        return;
+      }
+      if (/^🎯.*(daily|entry)/i.test(rawText) || rawText === '🎯 Daily Entry (/daily)') {
+        await handleDaily(ctx);
+        return;
+      }
+      if (/^📋.*watcher/i.test(rawText) || rawText === '📋 Watchers (/watchers)') {
+        await handleWatchers(ctx);
+        return;
+      }
+      if (/^📊.*scan/i.test(rawText) || rawText === '📊 Scan Watchlist (/scan)') {
+        await handleScan(ctx);
+        return;
+      }
+      if (/^ℹ️.*(help|status)/i.test(rawText) || rawText === 'ℹ️ Help & Status (/help)') {
+        await handleHelp(ctx);
+        return;
+      }
+
+      if (!rawText.startsWith('/')) {
         return next();
       }
 
-      const parts = text.slice(1).split(/\s+/);
+      const parts = rawText.slice(1).split(/\s+/);
       const rawCmd = parts[0].toLowerCase().split('@')[0]; // handle @bot_username
       const tf = parts[1];
 
@@ -427,6 +584,23 @@ export class TelegramBotService {
    */
   public async launch(): Promise<void> {
     try {
+      // Register Telegram Bot native command menu (shown in Telegram's Menu button)
+      try {
+        await this.bot.telegram.setMyCommands([
+          { command: 'menu', description: '📱 Buka menu tombol navigasi utama' },
+          { command: 'find', description: '🔍 Screener 30 pair teraktif di Binance' },
+          { command: 'scalp', description: '⚡ Scalping radar momentum (15m/30m)' },
+          { command: 'daily', description: '🎯 Rekomendasi entry trading harian (1h)' },
+          { command: 'watchers', description: '📋 Pantauan live trade aktif (TP/SL)' },
+          { command: 'scan', description: '📊 Scan watchlist pair' },
+          { command: 'status', description: '⚙️ Status operasional & scanner bot' },
+          { command: 'help', description: '📖 Panduan lengkap & risk management' }
+        ]);
+        logger.info('Telegram Bot native command menu registered successfully');
+      } catch (cmdErr) {
+        logger.warn(`Could not set Telegram commands: ${(cmdErr as Error).message}`);
+      }
+
       await this.bot.launch();
       this.isRunning = true;
       logger.info('Telegram bot polling started');
@@ -476,6 +650,42 @@ export class TelegramBotService {
       return true;
     } catch {
       return this.sendAlert(message);
+    }
+  }
+
+  /**
+   * Broadcast daily trading suggestions update to Telegram
+   */
+  public async sendDailyTradingUpdate(
+    results: SignalResult[],
+    totalScanned: number,
+    timeframe: string,
+    isAutomated: boolean = true
+  ): Promise<boolean> {
+    const text = formatDailyTradingMessage(results, totalScanned, timeframe, isAutomated);
+
+    let inlineKeyboard;
+    if (results.length > 0) {
+      const buttons = results.map(r => [
+        Markup.button.callback(`🔔 Notice Me: ${r.symbol.replace('USDT', '')}`, `notice:${r.symbol}:${r.timeframe}`)
+      ]);
+      inlineKeyboard = Markup.inlineKeyboard(buttons);
+    }
+
+    try {
+      if (inlineKeyboard) {
+        await this.bot.telegram.sendMessage(this.config.telegram.chatId, text, {
+          parse_mode: 'HTML',
+          ...inlineKeyboard
+        });
+      } else {
+        await this.bot.telegram.sendMessage(this.config.telegram.chatId, text, {
+          parse_mode: 'HTML'
+        });
+      }
+      return true;
+    } catch {
+      return this.sendAlert(text);
     }
   }
 

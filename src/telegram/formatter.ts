@@ -10,6 +10,8 @@ export interface BotStatusInfo {
   lastScanTime: string;
   nextScanTime: string;
   uptime: string;
+  dailyTradingStatus?: string;
+  nextDailyScanTime?: string;
 }
 
 /**
@@ -289,7 +291,7 @@ export function formatScreenerMessage(
  * Formats /status message
  */
 export function formatBotStatusMessage(info: BotStatusInfo): string {
-  return `🤖 <b>BOT STATUS</b>
+  let msg = `🤖 <b>BOT STATUS</b>
 
 Status: <b>${info.status}</b>
 
@@ -305,6 +307,15 @@ ${info.nextScanTime}
 
 Uptime:
 ${info.uptime}`;
+
+  if (info.dailyTradingStatus) {
+    msg += `\n\nDaily Trading: <b>${info.dailyTradingStatus}</b>`;
+    if (info.nextDailyScanTime) {
+      msg += `\nNext Daily Scan: ${info.nextDailyScanTime}`;
+    }
+  }
+
+  return msg;
 }
 
 /**
@@ -430,25 +441,87 @@ Ketik analisa koin apa saja (contoh: /near, /sui, /sol) atau /scalp, lalu klik t
 }
 
 /**
+ * Formats daily trading entry suggestions message
+ */
+export function formatDailyTradingMessage(
+  results: SignalResult[],
+  totalScanned: number,
+  timeframe: string,
+  isAutomatedUpdate: boolean = false
+): string {
+  const title = isAutomatedUpdate
+    ? `📢 <b>UPDATE REKOMENDASI TRADING HARIAN (${timeframe.toUpperCase()})</b>`
+    : `🎯 <b>REKOMENDASI ENTRY TRADING HARIAN (${timeframe.toUpperCase()})</b>`;
+
+  let msg = `${title}\n`;
+  msg += `Scanned: <b>${totalScanned} pair Binance Spot volume tertinggi</b>\n`;
+  msg += `Fokus: <i>Day trading & swing momentum (Risk/Reward minimum 1:1.5)</i>\n\n`;
+
+  if (results.length === 0) {
+    msg += `⚪ <i>Saat ini belum ada setup dengan konfirmasi optimal (Score &gt;= 70). Pasar sedang bergerak sideways/koreksi.\nBot akan terus memantau dan mengirim update berkala saat setup entry muncul.</i>\n\n`;
+    msg += `💡 <i>Gunakan menu <b>⚡ Scalp Radar</b> untuk momentum cepat atau <b>🔍 Screener</b> untuk pantauan koin lainnya.</i>`;
+    return msg.trim();
+  }
+
+  for (let i = 0; i < results.length; i++) {
+    const item = results[i];
+    const pair = formatSymbolDisplay(item.symbol);
+    const slPct = ((item.entryPrice - item.stopLoss) / item.entryPrice * 100).toFixed(2);
+    const tp1Pct = ((item.takeProfit1 - item.entryPrice) / item.entryPrice * 100).toFixed(2);
+    const tp2Pct = ((item.takeProfit2 - item.entryPrice) / item.entryPrice * 100).toFixed(2);
+
+    let setupLabel = 'Bullish Setup';
+    if (item.indicators.breakout) {
+      setupLabel = '🚀 Breakout Resistance';
+    } else if (item.indicators.emaFast > item.indicators.emaSlow && item.indicators.emaSlow > item.indicators.emaTrend) {
+      setupLabel = '📈 Strong Bullish Trend (EMA Confluence)';
+    } else if (item.indicators.rsi < 50 && item.indicators.rsi >= 35) {
+      setupLabel = '🔄 Pullback Entry / Dip Buying';
+    }
+
+    msg += `<b>${i + 1}. ${pair}</b> — Score: <b>${item.score}/100</b> [${getSignalEmoji(item.signal)} ${item.signal}]\n`;
+    msg += `🏷️ Setup: <i>${setupLabel}</i>\n`;
+    msg += `💰 <b>Area Entry:</b> <b>${formatPrice(item.entryPrice)}</b>\n`;
+    msg += `🛑 <b>Stop Loss:</b> ${formatPrice(item.stopLoss)} (-${slPct}%)\n`;
+    msg += `🎯 <b>Target TP1 (50%):</b> ${formatPrice(item.takeProfit1)} (+${tp1Pct}%) [R:R 1:1.5]\n`;
+    msg += `🚀 <b>Target TP2 (Max):</b> ${formatPrice(item.takeProfit2)} (+${tp2Pct}%) [R:R 1:2.5]\n`;
+    msg += `📊 <b>Indikator:</b> RSI ${item.indicators.rsi.toFixed(1)} | Vol ${item.indicators.volume.ratio.toFixed(2)}x | MACD ${item.indicators.macd.histogram > 0 ? 'Bullish' : 'Neutral'}\n`;
+    msg += `👉 Cek detail: /${item.symbol.toLowerCase().replace('usdt', '')}\n\n`;
+  }
+
+  msg += `💡 <i>Gunakan tombol menu keyboard di bawah untuk navigasi cepat atau klik <b>🔔 Notice Me</b> untuk pantau TP/SL otomatis!</i>`;
+  return msg.trim();
+}
+
+/**
  * Formats /start message
  */
-export function formatStartMessage(availableCommands: string[]): string {
+export function formatStartMessage(availableCoins: string[]): string {
   return `🤖 <b>Chaewon Crypto Signal Bot</b>
 
-Bot analisa teknikal spot, scalping radar &amp; trade watcher otomatis dari Binance.
+Bot analisa teknikal spot, scalping radar, rekomendasi trading harian &amp; trade watcher live otomatis dari Binance.
 
-📌 <b>Perintah Tersedia:</b>
-• /scalp [15m|30m] - <b>Radar Peluang Scalping</b> cepat timeframe pendek
-• /screener atau /find - <b>Market Screener</b> 30 koin aktif di Binance
-• /scan - Scan pair di daftar pantauan (Watchlist)
-• /watchers - Lihat semua trade yang sedang dipantau live
+📱 <b>Menu Navigasi Cepat (Tombol Keyboard Tersedia di Bawah):</b>
+• 🔍 <b>Screener (/find)</b> - Market Screener 30 koin aktif di Binance
+• ⚡ <b>Scalp Radar (/scalp)</b> - Radar momentum scalping cepat (15m/30m)
+• 🎯 <b>Daily Entry (/daily)</b> - Rekomendasi sinyal entry trading harian (1h)
+• 📋 <b>Watchers (/watchers)</b> - Daftar live trade yang dipantau (TP/SL)
+• 📊 <b>Scan Watchlist (/scan)</b> - Scan koin di watchlist konfigurasi
+• ℹ️ <b>Help &amp; Status (/help)</b> - Panduan lengkap &amp; status bot
+
+📌 <b>Perintah Text / Slash:</b>
+• /daily - Dapatkan rekomendasi entry trading harian
+• /find atau /screener - Scan 30 koin volume tertinggi
+• /scalp [15m|30m] - Radar scalping cepat
+• /watchers - Cek status posisi live yang sedang dipantau
 • /analyze &lt;coin&gt; [tf] - Analisa koin apapun di Binance (contoh: <code>/analyze SUI</code> atau <code>/analyze SOL 1h</code>)
 • /&lt;coin&gt; - Shortcut cepat analisa koin (contoh: /btc, /eth, /sol, /near, /sui, /doge)
-• /status - Cek status operasional bot
-• /help - Panduan lengkap &amp; risk management
+• /menu - Tampilkan kembali menu tombol navigasi
+• /status - Cek status operasional &amp; scan scheduler bot
 
-🔔 <b>Fitur "Notice Me":</b>
-Pada setiap analisa koin, klik tombol <b>🔔 Notice Me</b> untuk meminta bot menjadwalkan notifikasi otomatis saat Take Profit atau Stop Loss tersentuh!`;
+🔔 <b>Fitur Otomatis:</b>
+1. <b>Update Trading Harian:</b> Bot otomatis mengirim update peluang entry daily trading ke chat ini.
+2. <b>Notice Me (Live TP/SL Alert):</b> Klik tombol <b>🔔 Notice Me</b> pada setiap sinyal untuk memantau harga secara live setiap 30 detik!`;
 }
 
 /**
@@ -457,17 +530,24 @@ Pada setiap analisa koin, klik tombol <b>🔔 Notice Me</b> untuk meminta bot me
 export function formatHelpMessage(): string {
   return `📖 <b>PANDUAN CHAEWON CRYPTO SIGNAL BOT</b>
 
-<b>Perintah Utama:</b>
+<b>Navigasi Menu Utama:</b>
+Gunakan keyboard tombol di bawah layar atau perintah slash berikut:
+• /find atau /screener - Scan 30 koin volume tertinggi di Binance, filter setup entry BUY &amp; WATCH.
 • /scalp [15m|30m] - Radar scalping cepat mencari momentum entry jangka pendek (15-30 menit).
-• /screener atau /find - Scan 30 koin volume tertinggi di Binance, filter setup entry BUY &amp; WATCH.
-• /watchers - Melihat daftar trade yang sedang dipantau bot.
-• /unwatch &lt;koin&gt; - Membatalkan pemantauan trade.
+• /daily - Dapatkan rekomendasi entry trading harian dengan level Entry, TP1, TP2, dan SL terperinci.
+• /watchers - Melihat daftar trade yang sedang dipantau live oleh bot.
+• /scan - Scan pair yang ada di daftar watchlist konfigurasi.
+• /menu - Membuka menu navigasi tombol interaktif.
+• /unwatch &lt;koin&gt; - Membatalkan pemantauan trade live.
 • /analyze &lt;koin&gt; [tf] - Analisa koin apapun di Binance Spot (contoh: <code>/analyze DOGE</code> atau <code>/analyze SUI 4h</code>).
 • /&lt;koin&gt; - Shortcut cepat: <code>/btc</code>, <code>/eth</code>, <code>/sol</code>, <code>/near</code>, <code>/sui</code>, dll.
 • /status - Status bot &amp; jadwal scanning berkala.
 
+<b>Fitur Rekomendasi Trading Harian:</b>
+Bot secara otomatis menganalisa koin-koin berlikuiditas tinggi di Binance pada timeframe 1H dan mengirimkan update sinyal entry ke chat ini secara berkala. Anda juga dapat memicu analisa harian kapan saja dengan mengetik <code>/daily</code> atau menekan tombol <b>🎯 Daily Entry</b>.
+
 <b>Fitur "Notice Me" (Pemantau Posisi Real-time):</b>
-Saat Anda melihat hasil analisa koin (misal: <code>/near</code>), klik tombol <b>🔔 Notice Me</b> di bawah pesan.
+Saat Anda melihat hasil rekomendasi atau analisa koin (misal: <code>/near</code>), klik tombol <b>🔔 Notice Me</b> di bawah pesan.
 Bot akan:
 1. Menjadwalkan pemantauan harga live setiap 30 detik.
 2. Mengirimkan notifikasi instan saat harga menyentuh:

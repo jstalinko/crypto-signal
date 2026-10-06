@@ -26,5 +26,12 @@
     "atrPeriod": 14,
     "volumePeriod": 20,
     "buyThreshold": 75
+  },
+  "dailyTrading": {
+    "enabled": true,
+    "timeframe": "1h",
+    "intervalHours": 4,
+    "minScore": 70,
+    "limit": 3
   }
 }

@@ -256,6 +256,48 @@ async function runTests() {
   }
   console.log('✅ Trade Watcher tests OK.\n');
 
+  // Test 10: Daily Trading Scanner, Updates & Keyboard Menu
+  console.log('Test 10: Testing Daily Trading Scanner & Keyboard Menu...');
+  const { results: dailyResults, totalScanned: dailyTotal } = await scanner.scanDailyTrading(3, '1h');
+  console.log(`Daily trading scanner returned ${dailyResults.length} setups out of ${dailyTotal} symbols (1h).`);
+
+  const { formatDailyTradingMessage, formatStartMessage, formatHelpMessage } = await import('../src/telegram/formatter.js');
+  const dailyManualMsg = formatDailyTradingMessage(dailyResults, dailyTotal, '1h', false);
+  console.log('--- Sample Daily Trading Manual Message ---');
+  console.log(dailyManualMsg);
+  console.log('-------------------------------------------');
+  validateTelegramHtml(dailyManualMsg, 'DailyTradingManual');
+
+  const dailyAutoMsg = formatDailyTradingMessage(dailyResults, dailyTotal, '1h', true);
+  console.log('--- Sample Daily Trading Automated Update ---');
+  console.log(dailyAutoMsg);
+  console.log('--------------------------------------------');
+  validateTelegramHtml(dailyAutoMsg, 'DailyTradingAuto');
+
+  const startMsg = formatStartMessage(['btc', 'eth', 'sol']);
+  validateTelegramHtml(startMsg, 'StartMessage');
+
+  const helpMsg = formatHelpMessage();
+  validateTelegramHtml(helpMsg, 'HelpMessage');
+
+  const { TelegramBotService } = await import('../src/telegram/bot.js');
+  const { loadConfig } = await import('../src/config.js');
+  const appConfig = loadConfig();
+  const dummyBotService = new TelegramBotService(appConfig);
+  const replyKeyboard = dummyBotService.getMainReplyKeyboard();
+  console.log('Reply Keyboard generated:', JSON.stringify(replyKeyboard));
+  if (!replyKeyboard.reply_markup || !('keyboard' in replyKeyboard.reply_markup)) {
+    throw new Error('Reply keyboard was not constructed properly');
+  }
+
+  const inlineKeyboard = dummyBotService.getMainInlineKeyboard();
+  console.log('Inline Keyboard generated:', JSON.stringify(inlineKeyboard));
+  if (!inlineKeyboard.reply_markup || !('inline_keyboard' in inlineKeyboard.reply_markup)) {
+    throw new Error('Inline keyboard was not constructed properly');
+  }
+
+  console.log('✅ Daily Trading Scanner, Formatters & Keyboards OK.\n');
+
   console.log('🎉 ALL TESTS PASSED SUCCESSFULLY!');
 }
 

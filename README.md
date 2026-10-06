@@ -97,6 +97,13 @@ Buka dan sesuaikan nilai di `config.json`:
     "atrPeriod": 14,
     "volumePeriod": 20,
     "buyThreshold": 75
+  },
+  "dailyTrading": {
+    "enabled": true,
+    "timeframe": "1h",
+    "intervalHours": 4,
+    "minScore": 70,
+    "limit": 3
   }
 }
 ```
@@ -181,16 +188,36 @@ npm start
 
 ---
 
+## 📱 Navigasi Menu Keyboard & Tombol Utama
+
+Bot ini dilengkapi dengan **Reply Keyboard navigasi persisten** yang selalu tersedia di bagian bawah layar Telegram serta tombol **Menu bawaan Telegram**:
+
+- `🔍 Screener (/find)`: Memindai 30 koin aktif Binance untuk setup entry teratas.
+- `⚡ Scalp Radar (/scalp)`: Radar momentum scalping cepat (15m/30m).
+- `🎯 Daily Entry (/daily)`: Rekomendasi entry trading harian dengan kalkulasi level Entry, TP1, TP2, dan SL terperinci.
+- `📋 Watchers (/watchers)`: Memantau live trade yang sedang dilacak dengan target TP/SL.
+- `📊 Scan Watchlist (/scan)`: Memindai koin yang terdaftar di watchlist `config.json`.
+- `ℹ️ Help & Status (/help)`: Panduan lengkap dan status scanner bot.
+
+Anda dapat menekan tombol keyboard kapan saja atau menggunakan perintah slash berikut.
+
+---
+
 ## 💬 Daftar Telegram Commands
 
 | Perintah | Deskripsi |
 |---|---|
-| `/screener` atau `/find` | **Market Screener**: Scan 30 koin volume tertinggi di Binance Spot untuk menemukan setup peluang entry BUY & WATCH teratas lengkap dengan TP & SL |
+| `/menu` | **Main Menu**: Membuka tampilan menu navigasi interaktif |
+| `/find` atau `/screener` | **Market Screener**: Scan 30 koin volume tertinggi di Binance Spot untuk menemukan setup peluang entry BUY & WATCH teratas lengkap dengan TP & SL |
+| `/scalp [15m\|30m]` | **Scalp Radar**: Memindai peluang momentum cepat durasi pendek (15-30 menit) |
+| `/daily` atau `/suggestion` | **Rekomendasi Trading Harian**: Analisa timeframe 1H untuk setup day trading dengan R:R optimal (otomatis dikirim berkala oleh bot) |
+| `/watchers` atau `/active` | **Trade Watchers**: Melihat daftar posisi live yang sedang dipantau real-time oleh bot |
+| `/unwatch <koin>` | Membatalkan pemantauan live untuk koin tertentu (contoh: `/unwatch NEAR`) |
 | `/scan` | Scan pair di daftar pantauan (`config.json`) |
 | `/scan all` | Shortcut untuk menjalankan market screener ke top koin Binance |
 | `/analyze <koin> [tf]` | **Analisa koin apapun di Binance Spot** (contoh: `/analyze SUI`, `/analyze DOGE 1h`, `/analyze SOL 15m`). Alias: `/entry`, `/cek` |
 | `/<koin> [tf]` | **Shortcut cepat koin apapun** (contoh: `/sol`, `/eth`, `/btc`, `/doge`, `/pepe`, `/near`, `/xrp`, `/sui 1h`) |
-| `/status` | Melihat status uptime, exchange, dan jadwal scan berikutnya |
+| `/status` | Melihat status uptime, exchange, scheduler scan, dan interval daily trading |
 | `/help` | Menampilkan panduan dan penjelasan indikator |
 
 *(Catatan: Anda dapat mengetikkan koin apapun langsung dengan tanda slash, misalnya `/doge` atau `/pepe`, tanpa perlu mendaftarkannya terlebih dahulu di `config.json`)*.
